@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kho tài liệu và VBA</title>
+  <meta name="description" content="Kho lưu tài liệu và code VBA trên GitHub Pages">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="theme-color" content="#107c41">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <h1>Kho tài liệu và VBA</h1>
+      <div class="titlebar-actions">
+        <button class="btn btn-quiet" id="btnToken" type="button">Kết nối để upload</button>
+        <button class="btn btn-light" id="btnPick" type="button">Thêm file</button>
+        <input id="filePicker" type="file" multiple hidden>
+      </div>
+    </header>
+
+    <div class="formula" role="search">
+      <output class="namebox" id="countBox" aria-label="Số file đang hiển thị">0 file</output>
+      <label class="fx" for="search">fx</label>
+      <input id="search" type="search" placeholder="Tìm theo tên file" autocomplete="off">
+    </div>
+
+    <main class="sheet" id="sheet">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-row" scope="col"><span class="sr">Dòng</span></th>
+            <th scope="col">A <span>Tên file</span></th>
+            <th class="col-type" scope="col">B <span>Loại</span></th>
+            <th class="col-size" scope="col">C <span>Dung lượng</span></th>
+            <th class="col-act" scope="col">D <span>Thao tác</span></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="state" id="state" hidden></div>
+      <div class="drop-hint" aria-hidden="true">Thả file vào đây để upload</div>
+    </main>
+
+    <nav class="tabs" aria-label="Lọc theo nhóm">
+      <button class="tab" type="button" data-group="all" aria-pressed="true">Tất cả</button>
+      <button class="tab" type="button" data-group="tai-lieu" aria-pressed="false">Tài liệu</button>
+      <button class="tab" type="button" data-group="vba" aria-pressed="false">VBA</button>
+    </nav>
+
+    <footer class="status" id="status" role="status">Đang tải</footer>
+  </div>
+
+  <dialog id="viewer" class="dlg dlg-code" aria-labelledby="viewerTitle">
+    <div class="dlg-head">
+      <h2 id="viewerTitle"></h2>
+      <div class="dlg-actions">
+        <select class="enc" id="encSelect" aria-label="Bảng mã hiển thị">
+          <option value="auto">Bảng mã: Tự động</option>
+          <option value="shift_jis">Tiếng Nhật (Shift-JIS)</option>
+          <option value="windows-1258">Tiếng Việt (Windows-1258)</option>
+          <option value="utf-8">UTF-8</option>
+        </select>
+        <button class="btn" id="btnCopy" type="button">Sao chép</button>
+        <button class="btn" id="btnViewerDownload" type="button">Tải xuống</button>
+        <button class="btn" data-close type="button">Đóng</button>
+      </div>
+    </div>
+    <pre class="code" id="codeWrap"><code id="codeBox"></code></pre>
+    <iframe class="preview" id="frameBox" title="Xem trước file" hidden></iframe>
+    <div class="preview img-wrap" id="imgWrap" hidden><img id="imgBox" alt=""></div>
+  </dialog>
+
+  <dialog id="tokenDlg" class="dlg dlg-form" aria-labelledby="tokenTitle">
+    <form id="tokenForm" method="dialog">
+      <h2 id="tokenTitle">Kết nối để upload</h2>
+      <p>Dán GitHub token có quyền ghi vào repo này. Người xem không cần token, chỉ người upload mới cần.</p>
+      <label class="field" for="tokenInput">GitHub token</label>
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" required>
+      <label class="check"><input id="tokenRemember" type="checkbox"> Nhớ trên máy này (chỉ chọn trên máy riêng)</label>
+      <p class="form-error" id="tokenError" hidden></p>
+      <div class="form-actions">
+        <button class="btn" id="btnForget" type="button" hidden>Ngắt kết nối</button>
+        <button class="btn" data-close type="button">Hủy</button>
+        <button class="btn btn-primary" id="btnTokenSave" type="submit">Kết nối</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="uploadDlg" class="dlg dlg-form" aria-labelledby="uploadTitle">
+    <form id="uploadForm" method="dialog">
+      <h2 id="uploadTitle">Upload file</h2>
+      <p>Trang này công khai: ai có link cũng xem và tải được file sau khi upload.</p>
+      <ul class="queue" id="queue"></ul>
+      <p class="form-error" id="uploadError" hidden></p>
+      <div class="form-actions">
+        <button class="btn" id="btnUploadCancel" data-close type="button">Hủy</button>
+        <button class="btn btn-primary" id="btnUploadStart" type="submit">Upload</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDlg" class="dlg dlg-form" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <h2 id="confirmTitle">Xóa file?</h2>
+      <p id="confirmText"></p>
+      <div class="form-actions">
+        <button class="btn" value="no">Giữ lại</button>
+        <button class="btn btn-danger" value="yes">Xóa file</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
