@@ -1,0 +1,253 @@
+Option Explicit
+
+'==================================================
+' frmHistory  -  入庫履歴 / 出庫履歴 (xem theo ngay)
+'
+' Mo bang:  ShowHistory K_IN   hoac  ShowHistory K_OUT
+' - Chon khoang ngay (mac dinh hom nay), 前日 / 今日 / 翌日 de chuyen nhanh
+' - Loc them theo 伝票番号 / ロット / 属性 / サイズ
+' - Bang duoi: tong theo 属性 + サイズ
+' - Dong da 取消 khong hien
+'==================================================
+
+Private Const FW As Single = 900
+Private Const FH As Single = 660
+
+Private WithEvents txtFrom As MSForms.TextBox
+Private WithEvents txtTo As MSForms.TextBox
+Private WithEvents txtFilter As MSForms.TextBox
+Private WithEvents cmdPrev As MSForms.CommandButton
+Private WithEvents cmdToday As MSForms.CommandButton
+Private WithEvents cmdNext As MSForms.CommandButton
+Private WithEvents cmdSearch As MSForms.CommandButton
+Private WithEvents cmdClose As MSForms.CommandButton
+
+Private lstData As MSForms.ListBox
+Private lstSum As MSForms.ListBox
+Private lblCount As MSForms.Label
+
+Private mKind As String
+
+'==================================================
+' GIAO DIEN
+'==================================================
+
+Private Sub UserForm_Initialize()
+
+    Dim title As String
+
+    mKind = HistoryKind
+    If mKind <> K_OUT Then mKind = K_IN
+
+    If mKind = K_IN Then
+        title = "入庫履歴"
+    Else
+        title = "出庫履歴"
+    End If
+
+    UI_InitForm Me, title, "日付を選んで、" & mKind & "した商品を確認します", FW, FH
+
+    UI_Panel Me, "pnlTop", 16, 72, 868, 64
+    UI_Caption Me, "capFrom", "開始日", 30, 80, 130
+    UI_Caption Me, "capTo", "終了日", 170, 80, 130
+    UI_Caption Me, "capFilter", "絞り込み（伝票・ロット・属性・サイズ）", 520, 80, 300
+
+    Set txtFrom = UI_Text(Me, "txtFrom", 30, 96, 130, 26)
+    Set txtTo = UI_Text(Me, "txtTo", 170, 96, 130, 26)
+    Set cmdPrev = UI_Button(Me, "cmdPrev", "前日", 310, 96, 64, 26, BTN_SECONDARY)
+    Set cmdToday = UI_Button(Me, "cmdToday", "今日", 378, 96, 64, 26, BTN_SECONDARY)
+    Set cmdNext = UI_Button(Me, "cmdNext", "翌日", 446, 96, 64, 26, BTN_SECONDARY)
+    Set txtFilter = UI_Text(Me, "txtFilter", 520, 96, 230, 26)
+    Set cmdSearch = UI_Button(Me, "cmdSearch", "検索", 758, 96, 112, 26, BTN_ACCENT)
+
+    Set lblCount = UI_Label(Me, "lblCount", "", 16, 146, 868, 22, 12, True, CLR_PRIMARY)
+
+    Set lstData = UI_List(Me, "lstData", 16, 172, 868, 272, _
+        Array(90, 160, 120, 200, 160, 60, 70), _
+        Array("日付", "伝票番号", "属性", "サイズ", "ロット番号", "本数", "備考"))
+
+    UI_Caption Me, "capSum", "品目別の合計", 16, 452, 300
+
+    Set lstSum = UI_List(Me, "lstSum", 16, 468, 868, 128, _
+        Array(220, 340, 140, 140), _
+        Array("属性", "サイズ", "ロット数", "本数"))
+
+    Set cmdClose = UI_Button(Me, "cmdClose", "閉じる", 776, 604, 108, 30, BTN_SECONDARY)
+
+    txtFrom.Value = Format$(Date, "yyyy/mm/dd")
+    txtTo.Value = Format$(Date, "yyyy/mm/dd")
+
+    LoadData
+
+End Sub
+
+'==================================================
+' SU KIEN
+'==================================================
+
+Private Sub cmdSearch_Click()
+    LoadData
+End Sub
+
+Private Sub cmdClose_Click()
+    Unload Me
+End Sub
+
+Private Sub cmdToday_Click()
+    txtFrom.Value = Format$(Date, "yyyy/mm/dd")
+    txtTo.Value = txtFrom.Value
+    LoadData
+End Sub
+
+Private Sub cmdPrev_Click()
+    ShiftDay -1
+End Sub
+
+Private Sub cmdNext_Click()
+    ShiftDay 1
+End Sub
+
+' Chuyen sang ngay truoc / sau (xem 1 ngay)
+Private Sub ShiftDay(ByVal n As Long)
+
+    Dim d As Date
+
+    If IsDate(txtFrom.Value) Then
+        d = CDate(txtFrom.Value) + n
+    Else
+        d = Date
+    End If
+
+    txtFrom.Value = Format$(d, "yyyy/mm/dd")
+    txtTo.Value = txtFrom.Value
+    LoadData
+
+End Sub
+
+Private Sub txtFrom_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then KeyCode = 0: LoadData
+End Sub
+
+Private Sub txtTo_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then KeyCode = 0: LoadData
+End Sub
+
+Private Sub txtFilter_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then KeyCode = 0: LoadData
+End Sub
+
+'==================================================
+' DOC DU LIEU
+'==================================================
+
+Private Sub LoadData()
+
+    Dim sh As Worksheet
+    Dim n As Long
+    Dim a As Variant
+    Dim i As Long
+    Dim k As Long
+    Dim d1 As Date, d2 As Date, d As Date
+    Dim flt As String
+    Dim lineTxt As String
+    Dim sumKeys As Object
+    Dim key As String
+    Dim v As Variant
+    Dim total As Double
+    Dim qty As Double
+
+    lstData.Clear
+    lstSum.Clear
+
+    If Not IsDate(txtFrom.Value) Or Not IsDate(txtTo.Value) Then
+        lblCount.Caption = "日付を正しく入力してください（例 2026/10/31）"
+        lblCount.ForeColor = CLR_DANGER
+        UI_Sound SOUND_ERROR
+        Exit Sub
+    End If
+
+    d1 = Int(CDate(txtFrom.Value))
+    d2 = Int(CDate(txtTo.Value))
+    If d2 < d1 Then d = d1: d1 = d2: d2 = d
+
+    flt = Trim$(CStr(txtFilter.Value))
+
+    Set sh = Sht(SH_TRANS)
+    n = LastRowOf(sh, "D")
+
+    Set sumKeys = CreateObject("Scripting.Dictionary")
+
+    If n >= 2 Then
+
+        ' A No | B 伝票 | C 日付 | D 区分 | E 属性 | F サイズ | G ロット | H 数量 | I 備考
+        a = sh.Range("A2:I" & n).Value
+
+        ' Moi nhat len tren
+        For i = UBound(a, 1) To 1 Step -1
+
+            If Trim$(CStr(a(i, 4))) = mKind And IsDate(a(i, 3)) Then
+
+                d = Int(CDate(a(i, 3)))
+
+                If d >= d1 And d <= d2 Then
+
+                    lineTxt = CStr(a(i, 2)) & "|" & CStr(a(i, 5)) & "|" & _
+                              CStr(a(i, 6)) & "|" & CStr(a(i, 7))
+
+                    If flt = "" Or InStr(1, lineTxt, flt, vbTextCompare) > 0 Then
+
+                        qty = NumOf(a(i, 8))
+
+                        lstData.AddItem Format$(d, "yyyy/mm/dd")
+                        k = lstData.ListCount - 1
+                        lstData.List(k, 1) = CStr(a(i, 2))
+                        lstData.List(k, 2) = CStr(a(i, 5))
+                        lstData.List(k, 3) = CStr(a(i, 6))
+                        lstData.List(k, 4) = CStr(a(i, 7))
+                        lstData.List(k, 5) = Num(qty)
+                        lstData.List(k, 6) = CStr(a(i, 9))
+
+                        total = total + qty
+
+                        key = CStr(a(i, 5)) & vbTab & CStr(a(i, 6))
+                        If sumKeys.Exists(key) Then
+                            v = sumKeys(key)
+                            v(0) = v(0) + 1
+                            v(1) = v(1) + qty
+                            sumKeys(key) = v
+                        Else
+                            sumKeys.Add key, Array(1, qty)
+                        End If
+
+                    End If
+
+                End If
+
+            End If
+
+        Next i
+
+    End If
+
+    For Each v In sumKeys.keys
+        lstSum.AddItem Split(v, vbTab)(0)
+        k = lstSum.ListCount - 1
+        lstSum.List(k, 1) = Split(v, vbTab)(1)
+        lstSum.List(k, 2) = CStr(sumKeys(v)(0))
+        lstSum.List(k, 3) = Num(CDbl(sumKeys(v)(1)))
+    Next v
+
+    lblCount.ForeColor = CLR_PRIMARY
+
+    If d1 = d2 Then
+        lblCount.Caption = Format$(d1, "yyyy/mm/dd") & " (" & Mid$("日月火水木金土", Weekday(d1), 1) & ")"
+    Else
+        lblCount.Caption = Format$(d1, "yyyy/mm/dd") & " ～ " & Format$(d2, "yyyy/mm/dd")
+    End If
+
+    lblCount.Caption = lblCount.Caption & "　　" & mKind & ": " & lstData.ListCount & " ロット　／　合計 " & _
+                       Num(total) & " 本　／　" & sumKeys.Count & " 品目"
+
+    UI_Status Me, "取消した記録は表示されません。"
+
+End Sub
