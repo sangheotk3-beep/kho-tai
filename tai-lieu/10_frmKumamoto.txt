@@ -1,0 +1,733 @@
+Option Explicit
+
+'==================================================
+' frmKumamoto  -  熊本行き
+'
+' Quet QR hang (hoac go so lo):
+'   材質 = QR thu 6, 寸法 = QR thu 8, ロット番号 = QR thu 16
+'   本数 moi lo = 1QR本数 (マスタ). 数量 = tong so ong da doc
+'   - Lo da xuat -> loi. Lo QR chua 入庫 -> xuat duoc, ghi (旧在庫)
+'   - Hang cu khong QR: o 旧在庫 chon 属性 / サイズ (hang con ton) + go ロット -> 追加
+'     (hoac chon 1 dong cung mat hang roi go so lo vao o QR)
+'   - Khong vuot ton kho
+' 印刷・出庫: in tem (moi 材質+寸法 = 1 tem) roi ghi 出庫, tru 在庫.
+'   伝票番号 = 熊本-yyyymmdd-hhnnss (huy duoc o 取消・調整)
+'==================================================
+
+Private Const FW As Single = 760
+Private Const FH As Single = 640
+
+' ===== CAI DAT IN =====
+' True  = may in tem: moi (材質+寸法) 1 tem, tu thu nho vua kho tem cua driver
+' False = giay A4
+Private Const USE_LABEL_PRINTER As Boolean = False
+
+' May in cho 熊本行き (dung ca khi in A4 lan in tem). "" = may in mac dinh cua Windows.
+' Lay ten: VBA -> Ctrl+G -> go  ?Application.ActivePrinter  -> Enter
+Private Const LABEL_PRINTER As String = ""
+
+Private Const LABEL_MARGIN_CM As Double = 0.2
+
+' True = khi in A4, moi khung 1 trang
+Private Const ONE_PER_PAGE As Boolean = False
+
+' Cot listbox: 0 材質 | 1 寸法 | 2 ロット番号 | 3 本数 | 4 旧在庫 (an, "1")
+
+Private WithEvents txtQR As MSForms.TextBox
+Private WithEvents lstData As MSForms.ListBox
+Private WithEvents cmdPrint As MSForms.CommandButton
+Private WithEvents cmdClear As MSForms.CommandButton
+Private WithEvents cmdClose As MSForms.CommandButton
+Private WithEvents cboAttr As MSForms.ComboBox
+Private WithEvents cboSize As MSForms.ComboBox
+Private WithEvents txtLot As MSForms.TextBox
+Private WithEvents cmdAddOld As MSForms.CommandButton
+
+Private lblMsg As MSForms.Label
+Private lblLots As MSForms.Label
+Private lblQty As MSForms.Label
+
+'==================================================
+' GIAO DIEN
+'==================================================
+
+Private Sub UserForm_Initialize()
+
+    UI_InitForm Me, "熊本行き", "商品QRを読み取り、印刷すると出庫されます", FW, FH
+
+    UI_Panel Me, "pnlScan", 16, 72, 728, 70
+    UI_Caption Me, "capQR", "商品QR（QRのある商品）", 30, 80, 400
+    Set txtQR = UI_ScanBox(Me, "txtQR", 30, 98, 700)
+
+    ' ----- Hang cu khong QR -----
+    UI_Panel Me, "pnlOld", 16, 150, 728, 62
+    UI_Caption Me, "capOld", "旧在庫（QRなし）　属性", 30, 157, 155
+    Set cboAttr = UI_Combo(Me, "cboAttr", 30, 182, 150, 24)
+    UI_Caption Me, "capSize", "サイズ", 190, 157, 200
+    Set cboSize = UI_Combo(Me, "cboSize", 190, 182, 220, 24)
+    UI_Caption Me, "capLot", "ロット番号", 420, 157, 180
+    Set txtLot = UI_Text(Me, "txtLot", 420, 182, 180, 24)
+    txtLot.IMEMode = fmIMEModeDisable
+    Set cmdAddOld = UI_Button(Me, "cmdAddOld", "追加", 610, 180, 120, 26, BTN_PRIMARY)
+
+    Set lblMsg = UI_Label(Me, "lblMsg", "", 16, 220, 728, 24, 11, True)
+
+    Set lstData = UI_List(Me, "lstData", 16, 252, 728, 260, _
+        Array(160, 230, 230, 80, 0), _
+        Array("材質", "寸法", "ロット番号", "本数", ""))
+
+    ' So lieu
+    Set lblLots = UI_StatCard(Me, "statLots", "ロット数", 16, 524, 150, 56)
+    Set lblQty = UI_StatCard(Me, "statQty", "数量", 176, 524, 190, 56)
+
+    Set cmdPrint = UI_Button(Me, "cmdPrint", "印刷・出庫", 400, 524, 130, 56, BTN_ACCENT)
+    Set cmdClear = UI_Button(Me, "cmdClear", "クリア", 538, 524, 100, 56, BTN_SECONDARY)
+    Set cmdClose = UI_Button(Me, "cmdClose", "閉じる", 646, 524, 98, 56, BTN_SECONDARY)
+
+    LoadOldAttributes
+    UpdateTotals
+    UI_Msg lblMsg, "商品QRを読み取ってください。QRのない旧在庫は「旧在庫」欄から追加します。", MSG_INFO
+    UI_Status Me, "行をダブルクリックすると削除します。"
+
+End Sub
+
+Private Sub UserForm_Activate()
+    FocusQR
+End Sub
+
+Private Sub FocusQR()
+    On Error Resume Next
+    txtQR.Value = vbNullString
+    txtQR.SetFocus
+End Sub
+
+'==================================================
+' SU KIEN
+'==================================================
+
+Private Sub txtQR_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then
+        KeyCode = 0
+        HandleScan
+    End If
+End Sub
+
+Private Sub lstData_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+
+    Dim i As Long
+
+    i = lstData.ListIndex
+    If i < 0 Then Exit Sub
+
+    If MsgBox("ロット " & lstData.List(i, 2) & " を削除しますか？", _
+              vbYesNo + vbQuestion, APP_NAME) = vbYes Then
+        lstData.RemoveItem i
+        UpdateTotals
+        UI_Msg lblMsg, "1 行削除しました。", MSG_INFO
+    End If
+
+    FocusQR
+
+End Sub
+
+Private Sub cmdClear_Click()
+
+    If lstData.ListCount > 0 Then
+        If MsgBox("読んだ内容を全てクリアしますか？", vbYesNo + vbQuestion, APP_NAME) <> vbYes Then
+            FocusQR
+            Exit Sub
+        End If
+    End If
+
+    lstData.Clear
+    UpdateTotals
+    UI_Msg lblMsg, "クリアしました。", MSG_INFO
+    FocusQR
+
+End Sub
+
+Private Sub cmdClose_Click()
+
+    If lstData.ListCount > 0 Then
+        If MsgBox("読んだ内容は出庫されずに消えます。閉じますか？", _
+                  vbYesNo + vbQuestion, APP_NAME) <> vbYes Then
+            FocusQR
+            Exit Sub
+        End If
+    End If
+
+    Unload Me
+
+End Sub
+
+Private Sub cmdPrint_Click()
+
+    Dim slip As String
+
+    If lstData.ListCount = 0 Then
+        UI_Msg lblMsg, "印刷する商品がありません。", MSG_ERROR
+        FocusQR
+        Exit Sub
+    End If
+
+    If MsgBox(lstData.ListCount & " ロット（" & lblQty.Caption & "）を印刷して出庫します。" & vbCrLf & _
+              "在庫から差し引きます。よろしいですか？", _
+              vbYesNo + vbQuestion, APP_NAME) <> vbYes Then
+        FocusQR
+        Exit Sub
+    End If
+
+    slip = "熊本-" & Format$(Now, "yyyymmdd-hhnnss")
+
+    If Not BuildAndPrint(slip) Then
+        If MsgBox("印刷できませんでした。出庫だけ確定しますか？" & vbCrLf & _
+                  "（シート「" & SH_KUMA & "」から後で印刷できます）", _
+                  vbYesNo + vbExclamation, APP_NAME) <> vbYes Then
+            FocusQR
+            Exit Sub
+        End If
+    End If
+
+    If CommitShip(slip) Then
+        lstData.Clear
+        UpdateTotals
+        LoadOldAttributes
+        UI_Msg lblMsg, "出庫しました（" & slip & "）。", MSG_OK
+        UI_Sound SOUND_DONE
+        UI_Status Me, "熊本行き 出庫: " & slip, MSG_OK
+    End If
+
+    FocusQR
+
+End Sub
+
+'==================================================
+' QUET
+'==================================================
+
+Private Sub HandleScan()
+
+    Dim raw As String
+    Dim attr As String, siz As String, lot As String
+    Dim units As Double
+    Dim state As Long
+    Dim isOld As Boolean
+    Dim k As Long
+
+    raw = CleanText(CStr(txtQR.Value))
+    txtQR.Value = vbNullString
+
+    If raw = "" Then Exit Sub
+
+    If InStr(1, raw, ",") > 0 Then
+
+        If Not ParseGoodsQR(raw, attr, siz, lot) Then
+            UI_Msg lblMsg, "商品QRではありません。", MSG_ERROR
+            FocusQR
+            Exit Sub
+        End If
+
+        If lot = "" Then
+            UI_Msg lblMsg, "ロット番号がありません。", MSG_ERROR
+            FocusQR
+            Exit Sub
+        End If
+
+        state = LotState(lot)
+        If state = LOT_NONE Then isOld = True
+
+    Else
+
+        lot = raw
+        state = LotState(lot, attr, siz)
+
+        If state = LOT_NONE Then
+            If lstData.ListIndex < 0 Then
+                UI_Msg lblMsg, "ロット " & lot & " は登録がありません。QRのない旧在庫は下の「旧在庫」欄で属性・サイズを選んで追加してください。", MSG_ERROR
+                FocusQR
+                Exit Sub
+            End If
+            attr = CStr(lstData.List(lstData.ListIndex, 0))
+            siz = CStr(lstData.List(lstData.ListIndex, 1))
+            isOld = True
+        End If
+
+    End If
+
+    If state = LOT_OUT Then
+        UI_Msg lblMsg, "ロット " & lot & " は出庫済みです。", MSG_ERROR
+        FocusQR
+        Exit Sub
+    End If
+
+    AddEntry attr, siz, lot, isOld
+    FocusQR
+
+End Sub
+
+' Kiem tra chung + them 1 lo vao danh sach
+Private Function AddEntry( _
+    ByVal attr As String, ByVal siz As String, _
+    ByVal lot As String, ByVal isOld As Boolean) As Boolean
+
+    Dim units As Double
+    Dim k As Long
+
+    If LotInList(lot) Then
+        UI_Msg lblMsg, "ロット " & lot & " はもう読みました。", MSG_ERROR
+        Exit Function
+    End If
+
+    If Not GetUnitsPerQR(attr, siz, units) Then
+        UI_Msg lblMsg, "マスタに 1QR本数 がありません: " & attr & " / " & siz, MSG_ERROR
+        Exit Function
+    End If
+
+    If StockOf(attr, siz) < ScannedQty(attr, siz) + units - EPS Then
+        UI_Msg lblMsg, "在庫が足りません: " & attr & " / " & siz & "（在庫 " & Num(StockOf(attr, siz)) & " 本）", MSG_ERROR
+        Exit Function
+    End If
+
+    lstData.AddItem attr
+    k = lstData.ListCount - 1
+    lstData.List(k, 1) = siz
+    lstData.List(k, 2) = lot
+    lstData.List(k, 3) = Num(units)
+    lstData.List(k, 4) = IIf(isOld, "1", "")
+    lstData.ListIndex = k
+
+    UpdateTotals
+
+    If isOld Then
+        UI_Msg lblMsg, "OK（旧在庫）  " & attr & " / " & siz & " / " & lot & "（" & Num(units) & " 本）", MSG_OK
+    Else
+        UI_Msg lblMsg, "OK  " & attr & " / " & siz & " / " & lot & "（" & Num(units) & " 本）", MSG_OK
+    End If
+
+    AddEntry = True
+
+End Function
+
+'==================================================
+' HANG CU KHONG QR: chon 属性 / サイズ (hang con ton) + go ロット
+'==================================================
+
+Private Sub LoadOldAttributes()
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim s As String
+
+    cboAttr.Clear
+    cboSize.Clear
+
+    Set sh = Sht(SH_STOCK)
+
+    For r = 2 To LastRowOf(sh, "A")
+        s = Trim$(CStr(sh.Cells(r, "A").Value))
+        If s <> "" And NumOf(sh.Cells(r, "H").Value) > 0 Then
+            If Not ComboHas(cboAttr, s) Then cboAttr.AddItem s
+        End If
+    Next r
+
+End Sub
+
+Private Sub cboAttr_Change()
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim attr As String
+    Dim s As String
+
+    cboSize.Clear
+    attr = Trim$(CStr(cboAttr.Value))
+    If attr = "" Then Exit Sub
+
+    Set sh = Sht(SH_STOCK)
+
+    For r = 2 To LastRowOf(sh, "A")
+        If StrComp(Trim$(CStr(sh.Cells(r, "A").Value)), attr, vbTextCompare) = 0 _
+        And NumOf(sh.Cells(r, "H").Value) > 0 Then
+            s = Trim$(CStr(sh.Cells(r, "B").Value))
+            If s <> "" And Not ComboHas(cboSize, s) Then cboSize.AddItem s
+        End If
+    Next r
+
+End Sub
+
+Private Sub cboSize_Change()
+    On Error Resume Next
+    If cboSize.ListIndex >= 0 Then txtLot.SetFocus
+End Sub
+
+Private Sub txtLot_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then
+        KeyCode = 0
+        AddOld
+    End If
+End Sub
+
+Private Sub cmdAddOld_Click()
+    AddOld
+End Sub
+
+Private Sub AddOld()
+
+    Dim attr As String, siz As String, lot As String
+    Dim recAttr As String, recSize As String
+    Dim state As Long
+    Dim isOld As Boolean
+
+    attr = Trim$(CStr(cboAttr.Value))
+    siz = Trim$(CStr(cboSize.Value))
+    lot = NormalizeLotText(CStr(txtLot.Value))
+
+    If attr = "" Or siz = "" Then
+        UI_Msg lblMsg, "旧在庫: 属性とサイズを選択してください。", MSG_ERROR
+        Exit Sub
+    End If
+
+    If lot = "" Then
+        UI_Msg lblMsg, "旧在庫: ロット番号を入力してください。", MSG_ERROR
+        txtLot.SetFocus
+        Exit Sub
+    End If
+
+    state = LotState(lot, recAttr, recSize)
+
+    If state = LOT_OUT Then
+        UI_Msg lblMsg, "ロット " & lot & " は出庫済みです。", MSG_ERROR
+        txtLot.SetFocus
+        Exit Sub
+    End If
+
+    If state = LOT_IN Then
+        ' Lo nay da 入庫 (co QR) -> phai dung mat hang
+        If StrComp(recAttr, attr, vbTextCompare) <> 0 Or StrComp(recSize, siz, vbTextCompare) <> 0 Then
+            UI_Msg lblMsg, "ロット " & lot & " は " & recAttr & " / " & recSize & " で入庫されています。", MSG_ERROR
+            txtLot.SetFocus
+            Exit Sub
+        End If
+        isOld = False
+    Else
+        isOld = True
+    End If
+
+    If AddEntry(attr, siz, lot, isOld) Then
+        txtLot.Value = vbNullString
+    End If
+
+    On Error Resume Next
+    txtLot.SetFocus
+
+End Sub
+
+Private Function LotInList(ByVal lot As String) As Boolean
+
+    Dim i As Long
+
+    For i = 0 To lstData.ListCount - 1
+        If StrComp(CStr(lstData.List(i, 2)), lot, vbTextCompare) = 0 Then
+            LotInList = True
+            Exit Function
+        End If
+    Next i
+
+End Function
+
+Private Function ScannedQty(ByVal attr As String, ByVal siz As String) As Double
+
+    Dim i As Long
+
+    For i = 0 To lstData.ListCount - 1
+        If StrComp(CStr(lstData.List(i, 0)), attr, vbTextCompare) = 0 _
+        And StrComp(CStr(lstData.List(i, 1)), siz, vbTextCompare) = 0 Then
+            ScannedQty = ScannedQty + Val(lstData.List(i, 3))
+        End If
+    Next i
+
+End Function
+
+Private Sub UpdateTotals()
+
+    Dim i As Long
+    Dim qty As Double
+
+    For i = 0 To lstData.ListCount - 1
+        qty = qty + Val(lstData.List(i, 3))
+    Next i
+
+    lblLots.Caption = CStr(lstData.ListCount)
+    lblQty.Caption = Num(qty) & " 本"
+
+End Sub
+
+'==================================================
+' GHI XUAT KHO
+'==================================================
+
+Private Function CommitShip(ByVal slip As String) As Boolean
+
+    Dim need As Object
+    Dim i As Long
+    Dim attr As String, siz As String, lot As String
+    Dim qty As Double
+    Dim key As Variant
+    Dim note As String
+    Dim errMsg As String
+
+    Set need = CreateObject("Scripting.Dictionary")
+
+    For i = 0 To lstData.ListCount - 1
+
+        lot = CStr(lstData.List(i, 2))
+
+        If LotState(lot) = LOT_OUT Then
+            MsgBox "ロット " & lot & " はすでに出庫済みです。一覧から削除してください。", vbExclamation, APP_NAME
+            Exit Function
+        End If
+
+        key = CStr(lstData.List(i, 0)) & vbTab & CStr(lstData.List(i, 1))
+        need(key) = need(key) + Val(lstData.List(i, 3))
+
+    Next i
+
+    For Each key In need.keys
+        attr = Split(key, vbTab)(0)
+        siz = Split(key, vbTab)(1)
+        If StockOf(attr, siz) < need(key) - EPS Then
+            MsgBox "在庫が足りません: " & attr & " / " & siz & vbCrLf & _
+                   "在庫 " & Num(StockOf(attr, siz)) & " 本 / 出庫 " & Num(need(key)) & " 本", _
+                   vbExclamation, APP_NAME
+            Exit Function
+        End If
+    Next key
+
+    On Error GoTo CommitError
+    Application.ScreenUpdating = False
+
+    For i = 0 To lstData.ListCount - 1
+
+        attr = CStr(lstData.List(i, 0))
+        siz = CStr(lstData.List(i, 1))
+        lot = CStr(lstData.List(i, 2))
+        qty = Val(lstData.List(i, 3))
+
+        If CStr(lstData.List(i, 4)) = "1" Then
+            note = "熊本行き (旧在庫)"
+        Else
+            note = "熊本行き"
+        End If
+
+        WriteTrans slip, Date, K_OUT, attr, siz, lot, qty, note
+
+        errMsg = AdjustStock(attr, siz, 0, qty)
+        If errMsg <> "" Then Err.Raise vbObjectError + 1, , errMsg
+
+    Next i
+
+    Application.ScreenUpdating = True
+    CommitShip = True
+    Exit Function
+
+CommitError:
+    Application.ScreenUpdating = True
+    MsgBox "出庫登録中にエラーが発生しました。" & vbCrLf & Err.Description, vbCritical, APP_NAME
+
+End Function
+
+'==================================================
+' IN
+'==================================================
+
+Private Function BuildAndPrint(ByVal slip As String) As Boolean
+
+    Dim sh As Worksheet
+    Dim keys As Object
+    Dim order As Collection
+    Dim i As Long, g As Long
+    Dim key As String
+    Dim attr As String, siz As String, lots As String
+    Dim qty As Double
+    Dim nLot As Long
+    Dim r As Long, topR As Long
+    Dim bTop() As Long, bBot() As Long
+
+    ' Gom theo 材質 + 寸法 (giu thu tu quet)
+    Set keys = CreateObject("Scripting.Dictionary")
+    Set order = New Collection
+
+    For i = 0 To lstData.ListCount - 1
+        key = LCase$(lstData.List(i, 0)) & "|" & LCase$(lstData.List(i, 1))
+        If Not keys.Exists(key) Then
+            keys.Add key, i
+            order.Add key
+        End If
+    Next i
+
+    Set sh = GetOrCreateSheet(SH_KUMA)
+    sh.Visible = xlSheetVisible
+
+    Application.ScreenUpdating = False
+
+    sh.ResetAllPageBreaks
+    sh.Cells.Clear
+    sh.Cells.Font.Name = UI_FONT
+    sh.Columns("A").ColumnWidth = 16
+    sh.Columns("B").ColumnWidth = 55
+
+    sh.Range("A1").Value = "熊本行き"
+    sh.Range("A1").Font.Size = 14
+    sh.Range("A1").Font.Bold = True
+    sh.Range("B1").Value = Format$(Date, "yyyy/mm/dd") & "　　No. " & slip
+    sh.Range("B1").HorizontalAlignment = xlRight
+    sh.Range("B1").Font.Size = 10
+
+    r = 3
+    ReDim bTop(1 To order.Count)
+    ReDim bBot(1 To order.Count)
+
+    For g = 1 To order.Count
+
+        key = order(g)
+        lots = vbNullString
+        qty = 0: nLot = 0
+
+        For i = 0 To lstData.ListCount - 1
+            If LCase$(lstData.List(i, 0)) & "|" & LCase$(lstData.List(i, 1)) = key Then
+                attr = lstData.List(i, 0)
+                siz = lstData.List(i, 1)
+                If lots <> "" Then lots = lots & "、"
+                lots = lots & lstData.List(i, 2)
+                qty = qty + Val(lstData.List(i, 3))
+                nLot = nLot + 1
+            End If
+        Next i
+
+        topR = r
+
+        If ONE_PER_PAGE And Not USE_LABEL_PRINTER And g > 1 Then
+            sh.HPageBreaks.Add Before:=sh.Cells(topR, 1)
+        End If
+
+        WriteRow sh, r, "材質", attr, 16: r = r + 1
+        WriteRow sh, r, "寸法", siz, 16: r = r + 1
+        WriteRow sh, r, "ロット番号", lots, 12: r = r + 1
+        WriteRow sh, r, "数量", Num(qty) & " 本（" & nLot & " ロット）", 16: r = r + 1
+
+        With sh.Range("A" & topR & ":B" & (r - 1))
+            .Borders(xlEdgeTop).Weight = xlMedium
+            .Borders(xlEdgeBottom).Weight = xlMedium
+            .Borders(xlEdgeLeft).Weight = xlMedium
+            .Borders(xlEdgeRight).Weight = xlMedium
+        End With
+
+        bTop(g) = topR
+        bBot(g) = r - 1
+        r = r + 1
+
+    Next g
+
+    Application.ScreenUpdating = True
+
+    On Error GoTo PrintErr
+
+    If USE_LABEL_PRINTER Then
+        SetupPage sh, True
+        For g = 1 To order.Count
+            sh.PageSetup.PrintArea = "$A$" & bTop(g) & ":$B$" & bBot(g)
+            DoPrint sh
+        Next g
+    Else
+        SetupPage sh, False
+        sh.PageSetup.PrintArea = "$A$1:$B$" & (r - 1)
+        DoPrint sh
+    End If
+
+    BuildAndPrint = True
+
+PrintErr:
+    Application.ScreenUpdating = True
+    On Error Resume Next
+    sh.Visible = xlSheetHidden
+
+End Function
+
+Private Sub WriteRow(ByVal sh As Worksheet, ByVal r As Long, _
+                     ByVal cap As String, ByVal txt As String, ByVal fs As Single)
+
+    With sh.Cells(r, "A")
+        .Value = cap
+        .Font.Size = 14
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Interior.Color = CLR_SECONDARY
+    End With
+
+    With sh.Cells(r, "B")
+        .NumberFormat = "@"
+        .Value = txt
+        .Font.Size = fs
+        .Font.Bold = (cap <> "ロット番号")
+        .WrapText = True
+        .HorizontalAlignment = xlLeft
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+
+    With sh.Range("A" & r & ":B" & r).Borders
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+
+    sh.Rows(r).AutoFit
+    If sh.Rows(r).RowHeight < 32 Then sh.Rows(r).RowHeight = 32
+
+End Sub
+
+Private Sub SetupPage(ByVal sh As Worksheet, ByVal isLabel As Boolean)
+
+    On Error Resume Next
+
+    With sh.PageSetup
+        .Zoom = False
+        .FitToPagesWide = 1
+        .CenterHorizontally = True
+        .CenterFooter = ""
+        .LeftHeader = "": .CenterHeader = "": .RightHeader = ""
+
+        If isLabel Then
+            .FitToPagesTall = 1
+            .CenterVertically = True
+            .LeftMargin = Application.CentimetersToPoints(LABEL_MARGIN_CM)
+            .RightMargin = Application.CentimetersToPoints(LABEL_MARGIN_CM)
+            .TopMargin = Application.CentimetersToPoints(LABEL_MARGIN_CM)
+            .BottomMargin = Application.CentimetersToPoints(LABEL_MARGIN_CM)
+            .HeaderMargin = 0
+            .FooterMargin = 0
+        Else
+            .FitToPagesTall = False
+            .CenterVertically = False
+            .Orientation = xlPortrait
+            .PaperSize = xlPaperA4
+        End If
+    End With
+
+End Sub
+
+Private Sub DoPrint(ByVal sh As Worksheet)
+
+    Dim oldPrinter As String
+
+    If LABEL_PRINTER <> "" Then
+        oldPrinter = Application.ActivePrinter
+        sh.PrintOut ActivePrinter:=LABEL_PRINTER
+        On Error Resume Next
+        Application.ActivePrinter = oldPrinter
+        On Error GoTo 0
+    Else
+        sh.PrintOut
+    End If
+
+End Sub
