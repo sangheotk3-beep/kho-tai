@@ -1,0 +1,442 @@
+Option Explicit
+
+'==================================================
+' modSetup  -  ストレート管理  thiet lap sheet / Home / chuyen du lieu
+'
+'   ストレート管理_初期設定 : tao sheet con thieu + tieu de + Home.
+'                             Chay lai bao nhieu lan cung duoc,
+'                             KHONG xoa du lieu.
+'   データ移行             : chep du lieu tu file cu sang file nay.
+'==================================================
+
+
+Public Sub ストレート管理_初期設定()
+
+    Dim sh As Worksheet
+
+    Application.ScreenUpdating = False
+
+    UnprotectDataSheetsSilent
+
+    SetupSheet SH_MASTER, Array("No", "属性", "サイズ", "単位", "1QR本数", "期首在庫"), _
+               Array(6, 16, 26, 8, 10, 10), CLR_PRIMARY
+    SetupMasterOpening
+
+    SetupSheet SH_STOCK, Array("属性", "サイズ", "単位", "1QR本数", "期首在庫", "入庫", "出庫", "在庫"), _
+               Array(16, 26, 8, 10, 10, 10, 10, 10), CLR_PRIMARY
+
+    SetupSheet SH_TRANS, Array("No", "伝票番号", "日付", "区分", "属性", "サイズ", "ロット番号", "数量", "備考", "状態"), _
+               Array(7, 22, 12, 10, 16, 26, 20, 8, 30, 8), CLR_ACCENT
+
+    SetupSheet SH_DETAIL, Array("No", "伝票番号", "属性", "サイズ", "数量", "状態", "備考", "出庫予定日", "出庫日", "行番"), _
+               Array(7, 22, 16, 26, 8, 10, 30, 12, 12, 6), CLR_ACCENT
+
+    SetupSheet SH_LOG, Array("日時", "種類", "伝票番号", "ロット/行番", "属性", "サイズ", "本数"), _
+               Array(17, 10, 22, 20, 16, 26, 8), CLR_MUTED
+
+    ' Dinh dang chu cho cac cot ma (giu so 0 o dau)
+    Sht(SH_TRANS).Columns("B").NumberFormat = "@"
+    Sht(SH_TRANS).Columns("G").NumberFormat = "@"
+    Sht(SH_DETAIL).Columns("B").NumberFormat = "@"
+
+    ' Thu tu sheet
+    On Error Resume Next
+    Sht(SH_MASTER).Move Before:=ThisWorkbook.Worksheets(1)
+    Sht(SH_STOCK).Move After:=Sht(SH_MASTER)
+    Sht(SH_TRANS).Move After:=Sht(SH_STOCK)
+    Sht(SH_DETAIL).Move After:=Sht(SH_TRANS)
+    Sht(SH_LOG).Move After:=Sht(SH_DETAIL)
+    On Error GoTo 0
+
+    ' Bo sheet Home va sheet trong thua (Sheet1 ...)
+    RemoveExtraSheets
+
+    ' 期首在庫: lay so dang co trong 在庫 hien len マスタ (o con trong)
+    FillMasterOpeningFromStock
+    RefreshStockView Sht(SH_STOCK)
+    ProtectDataSheets
+
+    ThisWorkbook.BuiltinDocumentProperties("Title").Value = APP_NAME
+
+    Application.ScreenUpdating = True
+
+    Sht(SH_STOCK).Activate
+
+    MsgBox APP_NAME & " の初期設定が完了しました。" & vbCrLf & vbCrLf & _
+           "・古いファイルのデータを使う場合は「データ移行」を実行してください。" & vbCrLf & _
+           "・ファイルは .xlsm（マクロ有効ブック）で保存してください。", _
+           vbInformation, APP_NAME
+
+End Sub
+
+Public Sub SetupAll()
+    ストレート管理_初期設定
+End Sub
+
+Private Function SheetExists(ByVal sheetName As String) As Boolean
+    Dim sh As Worksheet
+    On Error Resume Next
+    Set sh = ThisWorkbook.Worksheets(sheetName)
+    SheetExists = Not (sh Is Nothing)
+End Function
+
+Private Sub SetupSheet( _
+    ByVal sheetName As String, ByVal heads As Variant, _
+    ByVal widths As Variant, ByVal tabColor As Long)
+
+    Dim sh As Worksheet
+    Dim isNew As Boolean
+    Dim n As Long
+    Dim i As Long
+
+    isNew = Not SheetExists(sheetName)
+    Set sh = GetOrCreateSheet(sheetName)
+
+    n = UBound(heads) - LBound(heads) + 1
+
+    ' Tieu de: chi ghi khi dong 1 dang trong
+    If Trim$(CStr(sh.Range("A1").Value)) = "" Then
+        sh.Range(sh.Cells(1, 1), sh.Cells(1, n)).Value = heads
+    End If
+
+    If isNew Then
+        sh.Cells.Font.Name = UI_FONT
+        sh.Cells.Font.Size = 10
+        For i = 0 To n - 1
+            sh.Columns(i + 1).ColumnWidth = widths(i)
+        Next i
+    End If
+
+    With sh.Range(sh.Cells(1, 1), sh.Cells(1, n))
+        .Font.Name = UI_FONT
+        .Font.Bold = True
+        .Font.Color = CLR_WHITE
+        .Interior.Color = CLR_PRIMARY
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    sh.Rows(1).RowHeight = 24
+    sh.Tab.Color = tabColor
+
+    ' Co dinh dong tieu de
+    sh.Activate
+    ActiveWindow.FreezePanes = False
+    sh.Range("A2").Select
+    ActiveWindow.FreezePanes = True
+    sh.Range("A1").Select
+
+    AddMenuButton sh, n
+
+End Sub
+
+' Xoa sheet Home va cac sheet trong khong dung
+Private Sub RemoveExtraSheets()
+
+    Dim i As Long
+    Dim sh As Worksheet
+    Dim keep As Boolean
+
+    Application.DisplayAlerts = False
+    On Error Resume Next
+
+    For i = ThisWorkbook.Worksheets.Count To 1 Step -1
+
+        Set sh = ThisWorkbook.Worksheets(i)
+
+        Select Case sh.Name
+            Case SH_MASTER, SH_STOCK, SH_TRANS, SH_DETAIL, SH_LOG, SH_TANA, SH_KUMA
+                keep = True
+            Case SH_HOME
+                keep = False
+            Case Else
+                ' Sheet khac: chi xoa khi hoan toan trong
+                keep = (Application.WorksheetFunction.CountA(sh.Cells) > 0 Or sh.Shapes.Count > 0)
+        End Select
+
+        If Not keep Then sh.Delete
+
+    Next i
+
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+End Sub
+
+' Nut "メニューへ戻る" o dong tieu de, ngay ben phai bang
+Private Sub AddMenuButton(ByVal sh As Worksheet, ByVal lastCol As Long)
+
+    Dim shp As Shape
+
+    On Error Resume Next
+    sh.Shapes("btnMenu").Delete
+    On Error GoTo 0
+
+    Set shp = sh.Shapes.AddShape(msoShapeRoundedRectangle, _
+        sh.Cells(1, lastCol + 2).Left, 1, 170, 22)
+
+    With shp
+        .Name = "btnMenu"
+        .Fill.ForeColor.RGB = CLR_ACCENT
+        .Line.Visible = msoFalse
+        .Placement = xlFreeFloating
+        .Shadow.Visible = msoTrue
+        .Shadow.OffsetX = 1
+        .Shadow.OffsetY = 2
+        .Shadow.Transparency = 0.7
+        .OnAction = "'" & ThisWorkbook.Name & "'!AppStart"
+        With .TextFrame2
+            .MarginTop = 0: .MarginBottom = 0
+            .VerticalAnchor = msoAnchorMiddle
+            .TextRange.Text = "← メニューへ戻る（Ctrl+M）"
+            .TextRange.Font.Name = UI_FONT
+            .TextRange.Font.Size = 10
+            .TextRange.Font.Bold = msoTrue
+            .TextRange.Font.Fill.ForeColor.RGB = CLR_WHITE
+            .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+    End With
+
+End Sub
+
+'==================================================
+' マスタ: cot F 期首在庫 (ton dau ky, hang khong QR)
+'   - Go so vao cot F -> tu dong ghi vao 在庫 cot E 期首在庫
+'   - Nut 在庫へ反映: ghi lai toan bo cot F
+'==================================================
+
+Private Sub SetupMasterOpening()
+
+    Dim sh As Worksheet
+    Dim shp As Shape
+
+    Set sh = Sht(SH_MASTER)
+
+    If Trim$(CStr(sh.Range("F1").Value)) = "" Then sh.Range("F1").Value = "期首在庫"
+
+    With sh.Range("F1")
+        .Font.Name = UI_FONT
+        .Font.Bold = True
+        .Font.Color = CLR_WHITE
+        .Interior.Color = CLR_ACCENT
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    If sh.Columns("F").ColumnWidth < 10 Then sh.Columns("F").ColumnWidth = 10
+    sh.Range("F2:F2000").Interior.Color = RGB(255, 253, 231)
+    sh.Range("F2:F2000").NumberFormat = "#,##0.##"
+
+    ' Nut 在庫へ反映
+    On Error Resume Next
+    sh.Shapes("btnOpening").Delete
+    On Error GoTo 0
+
+    Set shp = sh.Shapes.AddShape(msoShapeRoundedRectangle, _
+        sh.Cells(1, 8).Left + 178, 1, 110, 22)
+
+    With shp
+        .Name = "btnOpening"
+        .Fill.ForeColor.RGB = CLR_PRIMARY
+        .Line.Visible = msoFalse
+        .Placement = xlFreeFloating
+        .OnAction = "'" & ThisWorkbook.Name & "'!期首在庫を在庫へ反映"
+        With .TextFrame2
+            .MarginTop = 0: .MarginBottom = 0
+            .VerticalAnchor = msoAnchorMiddle
+            .TextRange.Text = "在庫へ反映"
+            .TextRange.Font.Name = UI_FONT
+            .TextRange.Font.Size = 10
+            .TextRange.Font.Bold = msoTrue
+            .TextRange.Font.Fill.ForeColor.RGB = CLR_WHITE
+            .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+    End With
+
+    InstallMasterEvent
+
+End Sub
+
+' Ghi code su kien vao sheet マスタ va 在庫
+Private Sub InstallMasterEvent()
+
+    InstallSheetCode SH_MASTER, _
+        "' 期首在庫 (cot F) -> 在庫" & vbCrLf & _
+        "Private Sub Worksheet_Change(ByVal Target As Range)" & vbCrLf & _
+        "    MasterChanged Target" & vbCrLf & _
+        "End Sub"
+
+    InstallSheetCode SH_STOCK, _
+        "' Mo sheet -> chi hien hang con ton, xep 属性 -> サイズ" & vbCrLf & _
+        "Private Sub Worksheet_Activate()" & vbCrLf & _
+        "    StockSheetActivated" & vbCrLf & _
+        "End Sub"
+
+End Sub
+
+Private Sub InstallSheetCode(ByVal sheetName As String, ByVal code As String)
+
+    Dim comp As Object
+    Dim c As Object
+    Dim cm As Object
+
+    On Error GoTo Skip
+
+    For Each c In ThisWorkbook.VBProject.VBComponents
+        If c.Type = 100 Then
+            If c.Properties("Name").Value = sheetName Then
+                Set comp = c
+                Exit For
+            End If
+        End If
+    Next c
+
+    If comp Is Nothing Then Exit Sub
+
+    Set cm = comp.CodeModule
+    If cm.CountOfLines > 0 Then cm.DeleteLines 1, cm.CountOfLines
+    cm.AddFromString "Option Explicit" & vbCrLf & vbCrLf & code
+    Exit Sub
+
+Skip:
+    ' Khong co quyen VBA: bo qua
+
+End Sub
+
+Private Sub SetShapeText( _
+    ByVal shp As Shape, ByVal txt As String, ByVal fs As Single, _
+    ByVal isBold As Boolean, ByVal color As Long)
+
+    With shp.TextFrame2
+        .VerticalAnchor = msoAnchorMiddle
+        .WordWrap = msoTrue
+        .TextRange.Text = txt
+        .TextRange.Font.Name = UI_FONT
+        .TextRange.Font.Size = fs
+        .TextRange.Font.Bold = IIf(isBold, msoTrue, msoFalse)
+        .TextRange.Font.Fill.ForeColor.RGB = color
+        .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    End With
+
+End Sub
+
+'==================================================
+' CHUYEN DU LIEU TU FILE CU
+'==================================================
+
+Public Sub データ移行()
+
+    Dim f As Variant
+    Dim wbOld As Workbook
+    Dim names As Variant
+    Dim i As Long
+    Dim report As String
+
+    f = Application.GetOpenFilename("Excel ファイル (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , "古いファイルを選択してください")
+    If VarType(f) = vbBoolean Then Exit Sub
+
+    If StrComp(CStr(f), ThisWorkbook.FullName, vbTextCompare) = 0 Then
+        MsgBox "このファイル自身は選択できません。", vbExclamation, APP_NAME
+        Exit Sub
+    End If
+
+    If MsgBox("古いファイルのデータをこのファイルへコピーします。" & vbCrLf & vbCrLf & _
+              "対象: マスタ / 在庫 / 入出庫記録 / OutputDetails / CancelLog" & vbCrLf & _
+              "このファイルの同じシートのデータ（2行目以降）は上書きされます。" & vbCrLf & vbCrLf & _
+              "よろしいですか？", vbYesNo + vbExclamation, APP_NAME) <> vbYes Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    UnprotectDataSheetsSilent
+
+    On Error GoTo Fail
+    Set wbOld = Workbooks.Open(Filename:=CStr(f), ReadOnly:=True, UpdateLinks:=0)
+
+    names = Array(SH_MASTER, SH_STOCK, SH_TRANS, SH_DETAIL, SH_LOG)
+
+    For i = LBound(names) To UBound(names)
+        report = report & CopySheetData(wbOld, CStr(names(i))) & vbCrLf
+    Next i
+
+    wbOld.Close SaveChanges:=False
+
+    InvalidateCaches
+    FillMasterOpeningFromStock
+    RefreshStockView Sht(SH_STOCK)
+    ProtectDataSheets
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "データ移行が完了しました。" & vbCrLf & vbCrLf & report & vbCrLf & _
+           "保存（Ctrl+S）してください。", vbInformation, APP_NAME
+    Exit Sub
+
+Fail:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    On Error Resume Next
+    If Not wbOld Is Nothing Then wbOld.Close SaveChanges:=False
+    MsgBox "データ移行に失敗しました。" & vbCrLf & Err.Description, vbCritical, APP_NAME
+
+End Sub
+
+Private Function CopySheetData(ByVal wbOld As Workbook, ByVal sheetName As String) As String
+
+    Const MAX_COL As Long = 10
+
+    Dim src As Worksheet
+    Dim dst As Worksheet
+    Dim lastRow As Long
+    Dim c As Long
+    Dim n As Long
+
+    On Error Resume Next
+    Set src = wbOld.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If src Is Nothing Then
+        CopySheetData = "・" & sheetName & " : 古いファイルにありません（スキップ）"
+        Exit Function
+    End If
+
+    Set dst = GetOrCreateSheet(sheetName)
+
+    If src.AutoFilterMode Then src.AutoFilterMode = False
+    If dst.AutoFilterMode Then dst.AutoFilterMode = False
+
+    For c = 1 To MAX_COL
+        If LastRowOf(src, ColLetter(c)) > lastRow Then lastRow = LastRowOf(src, ColLetter(c))
+    Next c
+
+    ' Xoa du lieu cu cua file nay
+    dst.Range(dst.Cells(2, 1), dst.Cells(dst.Rows.Count, MAX_COL)).ClearContents
+
+    If lastRow < 2 Then
+        CopySheetData = "・" & sheetName & " : 0 行"
+        Exit Function
+    End If
+
+    n = lastRow - 1
+
+    ' Cot ma: dinh dang chu truoc khi chep (giu so 0 o dau)
+    Select Case sheetName
+        Case SH_TRANS
+            dst.Columns("B").NumberFormat = "@"
+            dst.Columns("G").NumberFormat = "@"
+        Case SH_DETAIL
+            dst.Columns("B").NumberFormat = "@"
+        Case SH_LOG
+            dst.Columns("C").NumberFormat = "@"
+            dst.Columns("D").NumberFormat = "@"
+    End Select
+
+    dst.Range("A2").Resize(n, MAX_COL).Value = src.Range("A2").Resize(n, MAX_COL).Value
+
+    CopySheetData = "・" & sheetName & " : " & n & " 行"
+
+End Function
+
+Private Function ColLetter(ByVal c As Long) As String
+    ColLetter = Split(Cells(1, c).Address(True, False), "$")(0)
+End Function
