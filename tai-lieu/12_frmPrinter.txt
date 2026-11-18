@@ -1,0 +1,110 @@
+Option Explicit
+
+'==================================================
+' frmPrinter  -  プリンター設定
+' Chon may in A4 / may in tem tu danh sach may in da cai.
+' Luu trong file (khong can sua code).
+' "(自動)": A4 = may in mac dinh, tem = tu tim may in tem.
+'==================================================
+
+Private Const FW As Single = 620
+Private Const FH As Single = 400
+
+Private WithEvents cboA4 As MSForms.ComboBox
+Private WithEvents cboLabel As MSForms.ComboBox
+Private WithEvents cmdSave As MSForms.CommandButton
+Private WithEvents cmdReload As MSForms.CommandButton
+Private WithEvents cmdClose As MSForms.CommandButton
+
+Private lblNow As MSForms.Label
+
+Private Sub UserForm_Initialize()
+
+    UI_InitForm Me, "プリンター設定", "印刷に使うプリンターを選びます", FW, FH
+
+    UI_Panel Me, "pnl", 16, 72, 588, 170
+
+    UI_Caption Me, "capA4", "A4 プリンター（棚卸表など）", 30, 82, 400
+    Set cboA4 = UI_Combo(Me, "cboA4", 30, 100, 560, 26)
+
+    UI_Caption Me, "capLabel", "ラベルプリンター（熊本行き）", 30, 140, 400
+    Set cboLabel = UI_Combo(Me, "cboLabel", 30, 158, 560, 26)
+
+    UI_Label Me, "lblHelp", "(自動)：A4 は Windows の通常使うプリンター、ラベルはラベルプリンターを自動で探します。", _
+        30, 196, 560, 36, 9, False, CLR_MUTED
+    Me.Controls("lblHelp").WordWrap = True
+
+    Set lblNow = UI_Label(Me, "lblNow", "", 16, 252, 588, 60, 10, True, CLR_PRIMARY)
+    lblNow.WordWrap = True
+
+    Set cmdReload = UI_Button(Me, "cmdReload", "再検索", 16, 324, 120, 34, BTN_SECONDARY)
+    Set cmdSave = UI_Button(Me, "cmdSave", "保存", 380, 324, 110, 34, BTN_ACCENT)
+    Set cmdClose = UI_Button(Me, "cmdClose", "閉じる", 494, 324, 110, 34, BTN_SECONDARY)
+
+    LoadLists
+    UI_Status Me, "新しいプリンターを接続したら「再検索」を押してください。"
+
+End Sub
+
+Private Sub LoadLists()
+
+    Dim nm As Variant
+    Dim cur As String
+
+    cboA4.Clear
+    cboLabel.Clear
+
+    cboA4.AddItem PRINTER_AUTO
+    cboLabel.AddItem PRINTER_AUTO
+    cboLabel.AddItem PRINTER_NONE
+
+    For Each nm In PrinterNames()
+        cboA4.AddItem CStr(nm)
+        cboLabel.AddItem CStr(nm)
+    Next nm
+
+    cur = GetPrinterSetting(PrinterKeyA4())
+    If cur = "" Or Not ComboHas(cboA4, cur) Then cur = PRINTER_AUTO
+    cboA4.Value = cur
+
+    cur = GetPrinterSetting(PrinterKeyLabel())
+    If cur = "" Or Not ComboHas(cboLabel, cur) Then cur = PRINTER_AUTO
+    cboLabel.Value = cur
+
+    ShowCurrent
+
+End Sub
+
+' Hien may in se duoc dung thuc te
+Private Sub ShowCurrent()
+
+    Dim a4 As String
+    Dim lb As String
+
+    a4 = ResolveA4Printer()
+    lb = ResolveLabelPrinter()
+
+    lblNow.Caption = "現在の印刷先" & vbLf & _
+        "　棚卸表　：" & PrinterDisplayName(a4) & vbLf & _
+        "　熊本行き：" & IIf(lb = "", "A4 で印刷（" & PrinterDisplayName(a4) & "）", PrinterDisplayName(lb) & "（ラベル）")
+
+End Sub
+
+Private Sub cmdSave_Click()
+
+    SetPrinterSetting PrinterKeyA4(), CStr(cboA4.Value)
+    SetPrinterSetting PrinterKeyLabel(), CStr(cboLabel.Value)
+    ShowCurrent
+    UI_Status Me, "保存しました。", MSG_OK
+    UI_Sound SOUND_DONE
+
+End Sub
+
+Private Sub cmdReload_Click()
+    LoadLists
+    UI_Status Me, "プリンターを再検索しました。", MSG_OK
+End Sub
+
+Private Sub cmdClose_Click()
+    Unload Me
+End Sub
