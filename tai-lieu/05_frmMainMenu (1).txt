@@ -1,0 +1,160 @@
+Option Explicit
+
+'==================================================
+' frmMainMenu  -  ストレート管理  メインメニュー
+' (Form rong, giao dien ve bang code)
+'==================================================
+
+Private Const FW As Single = 640
+Private Const FH As Single = 470
+
+Private WithEvents cmdInbound As MSForms.CommandButton
+Private WithEvents cmdSlip As MSForms.CommandButton
+Private WithEvents cmdShip As MSForms.CommandButton
+Private WithEvents cmdKumamoto As MSForms.CommandButton
+Private WithEvents cmdStock As MSForms.CommandButton
+Private WithEvents cmdStocktake As MSForms.CommandButton
+Private WithEvents cmdCancel As MSForms.CommandButton
+Private WithEvents cmdMaster As MSForms.CommandButton
+Private WithEvents cmdHistory As MSForms.CommandButton
+Private WithEvents cmdExit As MSForms.CommandButton
+Private WithEvents cmdPrinter As MSForms.CommandButton
+
+Private lblStock As MSForms.Label
+Private lblPending As MSForms.Label
+Private lblToday As MSForms.Label
+
+Private Sub UserForm_Initialize()
+
+    UI_InitForm Me, "メインメニュー", "作業を選んでください", FW, FH
+
+    Section "入庫", 76
+    Set cmdInbound = MenuButton("cmdInbound", "入庫登録", 0, 76, BTN_PRIMARY)
+
+    Section "出庫", 140
+    Set cmdSlip = MenuButton("cmdSlip", "出庫伝票作成", 0, 140, BTN_PRIMARY)
+    Set cmdShip = MenuButton("cmdShip", "実際の出庫処理", 1, 140, BTN_PRIMARY)
+    Set cmdKumamoto = MenuButton("cmdKumamoto", "熊本行き", 2, 140, BTN_PRIMARY)
+
+    Section "在庫", 204
+    Set cmdStock = MenuButton("cmdStock", "在庫一覧", 0, 204, BTN_PRIMARY)
+    Set cmdStocktake = MenuButton("cmdStocktake", "棚卸し（印刷）", 1, 204, BTN_PRIMARY)
+    Set cmdPrinter = MenuButton("cmdPrinter", "プリンター設定", 2, 204, BTN_SECONDARY)
+
+    Section "管理", 268
+    Set cmdCancel = MenuButton("cmdCancel", "取消・調整", 0, 268, BTN_SECONDARY)
+    Set cmdMaster = MenuButton("cmdMaster", "品目マスタ", 1, 268, BTN_SECONDARY)
+    Set cmdHistory = MenuButton("cmdHistory", "入出庫履歴", 2, 268, BTN_SECONDARY)
+
+    ' Duong ke
+    With UI_Label(Me, "uiLine", "", 20, 340, 600, 1)
+        .BackStyle = fmBackStyleOpaque
+        .BackColor = CLR_BORDER
+    End With
+
+    ' So lieu
+    Set lblStock = UI_StatCard(Me, "statStock", "在庫品目", 20, 356, 144, 54)
+    Set lblPending = UI_StatCard(Me, "statPending", "未出庫伝票", 172, 356, 144, 54)
+    Set lblToday = UI_StatCard(Me, "statToday", "本日の出庫", 324, 356, 144, 54)
+
+    Set cmdExit = UI_Button(Me, "cmdExit", "終了", 476, 356, 144, 54, BTN_SECONDARY)
+
+    UI_Status Me, APP_NAME & "  ver " & APP_VERSION & "　　（シートからメニューを開く: Ctrl+M）"
+
+    RefreshStats
+
+End Sub
+
+Private Sub Section(ByVal cap As String, ByVal y As Single)
+
+    With UI_Label(Me, "sec" & y, "", 20, y + 6, 4, 38)
+        .BackStyle = fmBackStyleOpaque
+        .BackColor = CLR_ACCENT
+    End With
+
+    UI_Label Me, "secT" & y, cap, 30, y + 15, 56, 22, 13, True, CLR_PRIMARY
+
+End Sub
+
+Private Function MenuButton( _
+    ByVal nm As String, ByVal cap As String, _
+    ByVal col As Long, ByVal y As Single, ByVal style As Long) As MSForms.CommandButton
+
+    Set MenuButton = UI_Button(Me, nm, cap, 90 + col * 180, y, 170, 50, style)
+    MenuButton.Font.Size = 12
+
+End Function
+
+Private Sub RefreshStats()
+
+    On Error Resume Next
+
+    lblStock.Caption = CountStockItems() & " 品目"
+    lblPending.Caption = CountPendingSlips() & " 件"
+    lblToday.Caption = Num(TodayShippedQty()) & " 本"
+
+End Sub
+
+' Mo form con: an menu, mo form, quay lai menu
+Private Sub OpenChild(ByVal frm As Object)
+
+    Me.Hide
+    frm.Show
+    RefreshStats
+    Me.Show
+
+End Sub
+
+'==================================================
+' NUT
+'==================================================
+
+Private Sub cmdInbound_Click()
+    OpenChild frmInbound
+End Sub
+
+Private Sub cmdSlip_Click()
+    OpenChild frmOutputSlip
+End Sub
+
+Private Sub cmdShip_Click()
+    OpenChild frmOutputProcess
+End Sub
+
+Private Sub cmdKumamoto_Click()
+    OpenChild frmKumamoto
+End Sub
+
+Private Sub cmdCancel_Click()
+    OpenChild frmCancel
+End Sub
+
+Private Sub cmdStocktake_Click()
+    Me.Hide
+    棚卸表を印刷
+    RefreshStats
+    Me.Show
+End Sub
+
+Private Sub cmdStock_Click()
+    Unload Me
+    在庫一覧を開く
+End Sub
+
+Private Sub cmdMaster_Click()
+    Unload Me
+    品目マスタを開く
+End Sub
+
+Private Sub cmdHistory_Click()
+    Unload Me
+    入出庫履歴を開く
+End Sub
+
+Private Sub cmdPrinter_Click()
+    OpenChild frmPrinter
+End Sub
+
+Private Sub cmdExit_Click()
+    Unload Me
+End Sub
