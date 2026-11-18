@@ -1,0 +1,701 @@
+Option Explicit
+
+' Mat khau khoa sheet. "" = khong mat khau (chi chong sua nham).
+' Muon chac chan: dat mat khau, vi du "1234".
+Public Const PROTECT_PW As String = ""
+
+Public Const BACKUP_KEEP As Long = 60
+
+' May in cho 棚卸表 (uu tien nhat). "" = dung man hinh プリンター設定 / tu dong.
+' Lay ten: VBA -> Ctrl+G -> go  ?Application.ActivePrinter  -> Enter
+Public Const TANA_PRINTER As String = ""
+
+' Ket qua man hinh chon may in (frmPrintSelect)
+Public PickKind As String          ' "A4" / "LABEL"
+Public PickTitle As String
+Public PickResult As String        ' ten day du may in, "" = huy
+Public PickLabel As Boolean        ' True = in kieu tem (1 tem / khung)
+Public PickPreview As Boolean      ' True = xem truoc khi in
+
+' Loai lich su cho frmHistory (入庫 / 出庫)
+Public HistoryKind As String
+
+
+'==================================================
+' modApp  -  ストレート管理  khoi dong, danh sach, in
+'==================================================
+
+' Mo menu chinh (nut スタート, nut メニュー tren cac sheet, khi mo file)
+Public Sub AppStart()
+    frmMainMenu.Show
+End Sub
+
+' Mo man hinh lich su theo ngay: kind = K_IN hoac K_OUT
+Public Sub ShowHistory(ByVal kind As String)
+    HistoryKind = kind
+    frmHistory.Show
+End Sub
+
+Public Sub アプリ起動()
+    AppStart
+End Sub
+
+'==================================================
+' MO SHEET
+'==================================================
+
+' 在庫一覧: chi hien hang con ton, sap xep 属性 -> サイズ
+Public Sub 在庫一覧を開く()
+
+    Dim sh As Worksheet
+    Dim ev As Boolean
+
+    Set sh = Sht(SH_STOCK)
+
+    ev = Application.EnableEvents
+    Application.EnableEvents = False
+
+    RefreshStockView sh
+    sh.Activate
+    sh.Range("A1").Select
+
+    Application.EnableEvents = ev
+
+End Sub
+
+' Goi tu sheet 在庫 moi khi mo sheet (Worksheet_Activate)
+Public Sub StockSheetActivated()
+
+    Dim ev As Boolean
+
+    ev = Application.EnableEvents
+    Application.EnableEvents = False
+    On Error Resume Next
+
+    RefreshStockView Sht(SH_STOCK)
+
+    Application.EnableEvents = ev
+
+End Sub
+
+' Sap xep (con ton truoc -> 属性 -> サイズ) va an hang co 在庫 <= 0
+Public Sub RefreshStockView(ByVal sh As Worksheet)
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim su As Boolean
+
+    su = Application.ScreenUpdating
+    Application.ScreenUpdating = False
+
+    If sh.AutoFilterMode Then sh.AutoFilterMode = False
+
+    lastRow = LastRowOf(sh, "A")
+
+    If lastRow >= 3 Then
+
+        ' Cot tam K: 0 = con ton, 1 = het ton
+        For r = 2 To lastRow
+            If NumOf(sh.Cells(r, "H").Value) > 0 Then
+                sh.Cells(r, "K").Value = 0
+            Else
+                sh.Cells(r, "K").Value = 1
+            End If
+        Next r
+
+        With sh.Sort
+            .SortFields.Clear
+            .SortFields.Add Key:=sh.Range("K2:K" & lastRow), Order:=xlAscending
+            .SortFields.Add Key:=sh.Range("A2:A" & lastRow), Order:=xlAscending
+            .SortFields.Add Key:=sh.Range("B2:B" & lastRow), Order:=xlAscending
+            .SetRange sh.Range("A2:K" & lastRow)
+            .Header = xlNo
+            .Apply
+        End With
+
+        sh.Range("K2:K" & lastRow).ClearContents
+        InvalidateStockCache
+
+    End If
+
+    If lastRow >= 2 Then
+        sh.Range("A1:H" & lastRow).AutoFilter Field:=8, Criteria1:=">0"
+    End If
+
+    Application.ScreenUpdating = su
+
+End Sub
+
+Public Sub 品目マスタを開く()
+    ShowSheetAtEnd SH_MASTER, "B"
+End Sub
+
+Public Sub 入出庫履歴を開く()
+    ShowSheetAtEnd SH_TRANS, "D"
+End Sub
+
+Private Sub ShowSheetAtEnd(ByVal sheetName As String, ByVal col As String)
+
+    Dim sh As Worksheet
+
+    Set sh = Sht(sheetName)
+    sh.Visible = xlSheetVisible
+    sh.Activate
+
+    ' Nhay toi dong cuoi (du lieu moi nhat)
+    sh.Cells(NextRowOf(sh, col), 1).Select
+
+End Sub
+
+'==================================================
+' 棚卸表 : 属性 | サイズ | 数量  (hang con ton)
+'==================================================
+
+Public Sub 棚卸表を印刷()
+
+    Const FIRST_ROW As Long = 4
+
+    Dim shS As Worksheet
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim outR As Long
+    Dim qty As Double
+
+    Dim oldPrinter As String
+    Dim errMsg As String
+
+    Set shS = Sht(SH_STOCK)
+
+    If CountStockItems() = 0 Then
+        MsgBox "在庫のある品目がありません。", vbInformation, APP_NAME
+        Exit Sub
+    End If
+
+    ' Chon may in -> tao sheet moi theo kho giay cua may in do
+    If Not ChoosePrinter("A4", "棚卸表の印刷") Then Exit Sub
+
+    oldPrinter = Application.ActivePrinter
+    errMsg = SwitchPrinter(PickResult)
+    If errMsg <> "" Then
+        MsgBox errMsg, vbExclamation, APP_NAME
+        Exit Sub
+    End If
+
+    Set sh = FreshPrintSheet(SH_TANA)
+
+    Application.ScreenUpdating = False
+
+    If sh.AutoFilterMode Then sh.AutoFilterMode = False
+    sh.Cells.Clear
+    sh.Cells.Font.Name = UI_FONT
+
+    With sh.Range("A1:C1")
+        .Merge
+        .Value = "棚卸表"
+        .Font.Size = 18
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+    End With
+
+    sh.Range("A2:C2").Merge
+    sh.Range("A2").Value = APP_NAME & "　　" & Format$(Date, "yyyy/mm/dd")
+    sh.Range("A2").HorizontalAlignment = xlRight
+    sh.Range("A2").Font.Size = 9
+
+    sh.Range("A3:C3").Value = Array("属性", "サイズ", "数量")
+
+    With sh.Range("A3:C3")
+        .Font.Bold = True
+        .Font.Color = CLR_WHITE
+        .Interior.Color = CLR_PRIMARY
+        .HorizontalAlignment = xlCenter
+    End With
+
+    outR = FIRST_ROW - 1
+
+    For r = 2 To LastRowOf(shS, "A")
+        qty = NumOf(shS.Cells(r, "H").Value)
+        If qty > 0 Then
+            outR = outR + 1
+            sh.Cells(outR, "A").Value = shS.Cells(r, "A").Value
+            sh.Cells(outR, "B").Value = shS.Cells(r, "B").Value
+            sh.Cells(outR, "C").Value = qty
+        End If
+    Next r
+
+    If outR < FIRST_ROW Then
+        Application.ScreenUpdating = True
+        sh.Visible = xlSheetHidden
+        Application.ActivePrinter = oldPrinter
+        MsgBox "在庫のある品目がありません。", vbInformation, APP_NAME
+        Exit Sub
+    End If
+
+    With sh.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=sh.Range("A" & FIRST_ROW & ":A" & outR), Order:=xlAscending
+        .SortFields.Add Key:=sh.Range("B" & FIRST_ROW & ":B" & outR), Order:=xlAscending
+        .SetRange sh.Range("A" & FIRST_ROW & ":C" & outR)
+        .Header = xlNo
+        .Apply
+    End With
+
+    With sh.Range("A3:C" & outR)
+        .Font.Size = 11
+        .RowHeight = 20
+        .VerticalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous
+        .Borders.Color = CLR_BORDER
+    End With
+
+    sh.Range("C" & FIRST_ROW & ":C" & outR).NumberFormat = "#,##0.##"
+
+    sh.Columns("A").ColumnWidth = 18
+    sh.Columns("B").ColumnWidth = 24
+    sh.Columns("C").ColumnWidth = 12
+
+    On Error Resume Next
+    With sh.PageSetup
+        .PrintArea = "$A$1:$C$" & outR
+        .PrintTitleRows = "$3:$3"
+        .Orientation = xlPortrait
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = False
+        .CenterHorizontally = True
+        .CenterFooter = "&P / &N"
+    End With
+    On Error GoTo 0
+
+    Application.ScreenUpdating = True
+
+    sh.Activate
+    sh.Range("A1").Select
+    ' Kho giay = theo may in da chon, vua chieu ngang trang
+    On Error GoTo PrintFail
+    If PickPreview Then
+        sh.PrintPreview
+    Else
+        sh.PrintOut
+    End If
+PrintFail:
+    If Err.Number <> 0 Then MsgBox "印刷できませんでした。" & vbCrLf & Err.Description, vbExclamation, APP_NAME
+    On Error Resume Next
+    Application.ActivePrinter = oldPrinter
+    On Error GoTo 0
+
+    ' In xong: an sheet, quay ve 在庫
+    sh.Visible = xlSheetHidden
+    On Error Resume Next
+    Sht(SH_STOCK).Activate
+
+End Sub
+
+'==================================================
+' SO LIEU CHO MENU CHINH
+'==================================================
+
+Public Function CountStockItems() As Long
+
+    Dim sh As Worksheet
+    Dim r As Long
+
+    Set sh = Sht(SH_STOCK)
+
+    For r = 2 To LastRowOf(sh, "A")
+        If NumOf(sh.Cells(r, "H").Value) > 0 Then CountStockItems = CountStockItems + 1
+    Next r
+
+End Function
+
+Public Function CountPendingSlips() As Long
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim d As Object
+    Dim k As String
+
+    Set sh = Sht(SH_DETAIL)
+    Set d = CreateObject("Scripting.Dictionary")
+
+    For r = 2 To LastRowOf(sh, "B")
+        If Trim$(CStr(sh.Cells(r, "F").Value)) = ST_PENDING Then
+            k = LCase$(Trim$(CStr(sh.Cells(r, "B").Value)))
+            If Not d.Exists(k) Then d.Add k, 1
+        End If
+    Next r
+
+    CountPendingSlips = d.Count
+
+End Function
+
+Public Function TodayShippedQty() As Double
+
+    Dim sh As Worksheet
+    Dim r As Long
+
+    Set sh = Sht(SH_TRANS)
+
+    For r = 2 To LastRowOf(sh, "D")
+        If Trim$(CStr(sh.Cells(r, "D").Value)) = K_OUT Then
+            If IsDate(sh.Cells(r, "C").Value) Then
+                If Int(CDate(sh.Cells(r, "C").Value)) = Int(Date) Then
+                    TodayShippedQty = TodayShippedQty + NumOf(sh.Cells(r, "H").Value)
+                End If
+            End If
+        End If
+    Next r
+
+End Function
+
+'==================================================
+' BAO VE DU LIEU + SAO LUU
+'
+' - Tat ca sheet du lieu bi khoa: nguoi dung khong sua tay duoc,
+'   chi cac man hinh cua phan mem ghi vao.
+'   Sua マスタ (them hang / 期首在庫): chay シート保護解除 truoc.
+' - Moi lan mo va dong file: tu dong luu 1 ban sao vao thu muc "backup"
+'   canh file, giu toi da BACKUP_KEEP ban moi nhat.
+'==================================================
+
+Public Sub ProtectDataSheets()
+
+    Dim sh As Worksheet
+
+    On Error Resume Next
+
+    For Each sh In ThisWorkbook.Worksheets
+        If IsLockedSheet(sh.Name) Then
+            sh.Protect Password:=PROTECT_PW, UserInterfaceOnly:=True, _
+                       AllowFiltering:=True, AllowFormattingColumns:=True
+        End If
+    Next sh
+
+End Sub
+
+' Khoa tat ca sheet tru sheet in (棚卸表 / 熊本行き)
+Public Function IsLockedSheet(ByVal sheetName As String) As Boolean
+    Select Case sheetName
+        Case SH_HOME, SH_TANA, SH_KUMA
+            IsLockedSheet = False
+        Case Else
+            IsLockedSheet = True
+    End Select
+End Function
+
+' Mo khoa de sua tay (quan ly). Xong viec chay シート保護 hoac mo lai file.
+Public Sub シート保護解除()
+
+    Dim pw As String
+    Dim sh As Worksheet
+
+    If PROTECT_PW <> "" Then
+        pw = InputBox("パスワードを入力してください。", APP_NAME)
+        If pw <> PROTECT_PW Then
+            MsgBox "パスワードが違います。", vbExclamation, APP_NAME
+            Exit Sub
+        End If
+    End If
+
+    On Error Resume Next
+    For Each sh In ThisWorkbook.Worksheets
+        If IsLockedSheet(sh.Name) Then sh.Unprotect Password:=PROTECT_PW
+    Next sh
+
+    MsgBox "シートの保護を解除しました。" & vbCrLf & _
+           "作業が終わったら「シート保護」を実行するか、ファイルを開き直してください。", _
+           vbInformation, APP_NAME
+
+End Sub
+
+Public Sub UnprotectDataSheetsSilent()
+
+    Dim sh As Worksheet
+
+    On Error Resume Next
+    For Each sh In ThisWorkbook.Worksheets
+        If IsLockedSheet(sh.Name) Then sh.Unprotect Password:=PROTECT_PW
+    Next sh
+
+End Sub
+
+Public Sub シート保護()
+    ProtectDataSheets
+    MsgBox "シートを保護しました。", vbInformation, APP_NAME
+End Sub
+
+' Luu 1 ban sao vao thu muc backup
+Public Sub BackupNow(ByVal tag As String)
+
+    Dim folder As String
+    Dim fname As String
+    Dim ext As String
+
+    On Error GoTo Done
+
+    If ThisWorkbook.Path = "" Then Exit Sub
+
+    folder = ThisWorkbook.Path & Application.PathSeparator & "backup"
+    If Dir(folder, vbDirectory) = "" Then MkDir folder
+
+    ext = Mid$(ThisWorkbook.Name, InStrRev(ThisWorkbook.Name, "."))
+    fname = folder & Application.PathSeparator & "ストレート管理_" & _
+            Format$(Now, "yyyymmdd_hhnnss") & "_" & tag & ext
+
+    ThisWorkbook.SaveCopyAs fname
+
+    CleanupBackups folder
+
+Done:
+End Sub
+
+' Chi giu BACKUP_KEEP file moi nhat
+Private Sub CleanupBackups(ByVal folder As String)
+
+    Dim files() As String
+    Dim n As Long
+    Dim f As String
+    Dim i As Long, j As Long
+    Dim t As String
+
+    f = Dir(folder & Application.PathSeparator & "ストレート管理_*.*")
+
+    Do While f <> ""
+        ReDim Preserve files(0 To n)
+        files(n) = f
+        n = n + 1
+        f = Dir()
+    Loop
+
+    If n <= BACKUP_KEEP Then Exit Sub
+
+    ' Sap xep ten (ten co ngay gio -> cu truoc)
+    For i = 0 To n - 2
+        For j = i + 1 To n - 1
+            If files(j) < files(i) Then
+                t = files(i): files(i) = files(j): files(j) = t
+            End If
+        Next j
+    Next i
+
+    On Error Resume Next
+    For i = 0 To n - BACKUP_KEEP - 1
+        Kill folder & Application.PathSeparator & files(i)
+    Next i
+
+End Sub
+
+Public Sub バックアップフォルダを開く()
+
+    Dim folder As String
+
+    folder = ThisWorkbook.Path & Application.PathSeparator & "backup"
+    If Dir(folder, vbDirectory) = "" Then
+        MsgBox "まだバックアップがありません。", vbInformation, APP_NAME
+        Exit Sub
+    End If
+
+    Shell "explorer.exe """ & folder & """", vbNormalFocus
+
+End Sub
+
+'==================================================
+' MAY IN TU DONG
+'
+' - Luu lua chon trong file (khong can sua code): man hinh プリンター設定
+' - Neu chua chon:
+'     May in tem : tu tim may in co ten giong may in tem
+'                  (QL-, TD-, ラベル, Label, SATO, TEC, ZEBRA, DYMO, TM-...)
+'     May A4     : may in mac dinh cua Windows
+' - Ten ghi trong code (TANA_PRINTER / LABEL_PRINTER) duoc uu tien nhat.
+'==================================================
+
+Private Const PROP_A4 As String = "SK_PrinterA4"
+Private Const PROP_LABEL As String = "SK_PrinterLabel"
+Public Const PRINTER_AUTO As String = "(自動)"
+Public Const PRINTER_NONE As String = "(使わない・A4 で印刷)"
+
+' Tu khoa nhan dien may in tem (viet thuong)
+Private Const LABEL_KEYWORDS As String = "ql-|td-|tm-|pt-|ラベル|label|sato|tec |toshiba tec|zebra|dymo|citizen|godex|tsc |cw-|rollo|teraoka|tepra|テプラ"
+
+' Danh sach may in da cai: ten thiet bi (khong co " on NeXX:")
+Public Function PrinterNames() As Collection
+
+    Dim c As New Collection
+    Dim wmi As Object, items As Object, it As Object
+
+    On Error Resume Next
+    Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+    Set items = wmi.ExecQuery("SELECT Name FROM Win32_Printer")
+    For Each it In items
+        c.Add CStr(it.Name)
+    Next it
+    On Error GoTo 0
+
+    Set PrinterNames = c
+
+End Function
+
+' Ten thiet bi -> chuoi Excel can ("Ten on Ne01:"). "" neu khong co
+Public Function FullPrinterName(ByVal devName As String) As String
+
+    Dim v As String
+    Dim port As String
+
+    If devName = "" Then Exit Function
+
+    On Error Resume Next
+    v = CreateObject("WScript.Shell").RegRead( _
+        "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Devices\" & devName)
+    On Error GoTo 0
+
+    If v = "" Then Exit Function
+
+    port = Mid$(v, InStr(1, v, ",") + 1)
+    FullPrinterName = devName & " on " & port
+
+End Function
+
+Public Function StripPort(ByVal fullName As String) As String
+    Dim p As Long
+    p = InStrRev(fullName, " on ")
+    If p > 0 Then StripPort = Left$(fullName, p - 1) Else StripPort = fullName
+End Function
+
+Public Function IsLabelPrinterName(ByVal devName As String) As Boolean
+
+    Dim k As Variant
+    Dim s As String
+
+    s = LCase$(devName)
+    For Each k In Split(LABEL_KEYWORDS, "|")
+        If k <> "" And InStr(1, s, k) > 0 Then
+            IsLabelPrinterName = True
+            Exit Function
+        End If
+    Next k
+
+End Function
+
+Public Function GetPrinterSetting(ByVal key As String) As String
+    On Error Resume Next
+    GetPrinterSetting = CStr(ThisWorkbook.CustomDocumentProperties(key).Value)
+End Function
+
+Public Sub SetPrinterSetting(ByVal key As String, ByVal v As String)
+
+    On Error Resume Next
+    ThisWorkbook.CustomDocumentProperties(key).Delete
+    On Error GoTo 0
+
+    If v <> "" Then
+        ThisWorkbook.CustomDocumentProperties.Add Name:=key, LinkToContent:=False, _
+            Type:=4, Value:=v
+    End If
+
+End Sub
+
+Public Function PrinterKeyA4() As String
+    PrinterKeyA4 = PROP_A4
+End Function
+
+Public Function PrinterKeyLabel() As String
+    PrinterKeyLabel = PROP_LABEL
+End Function
+
+' May A4 (棚卸表). "" = may in mac dinh
+Public Function ResolveA4Printer() As String
+
+    Dim s As String
+
+    If TANA_PRINTER <> "" Then ResolveA4Printer = TANA_PRINTER: Exit Function
+
+    s = GetPrinterSetting(PROP_A4)
+    If s <> "" And s <> PRINTER_AUTO Then ResolveA4Printer = FullPrinterName(s)
+
+End Function
+
+' May in tem (熊本行き). "" = khong co -> in A4
+Public Function ResolveLabelPrinter(Optional ByVal codeName As String = "") As String
+
+    Dim s As String
+    Dim nm As Variant
+
+    If codeName <> "" Then ResolveLabelPrinter = codeName: Exit Function
+
+    s = GetPrinterSetting(PROP_LABEL)
+
+    If s = PRINTER_NONE Then Exit Function
+
+    If s <> "" And s <> PRINTER_AUTO Then
+        ResolveLabelPrinter = FullPrinterName(s)
+        If ResolveLabelPrinter <> "" Then Exit Function
+    End If
+
+    ' Tu dong: may in dau tien co ten giong may in tem
+    For Each nm In PrinterNames()
+        If IsLabelPrinterName(CStr(nm)) Then
+            ResolveLabelPrinter = FullPrinterName(CStr(nm))
+            If ResolveLabelPrinter <> "" Then Exit Function
+        End If
+    Next nm
+
+End Function
+
+Public Function PrinterDisplayName(ByVal fullName As String) As String
+    If fullName = "" Then
+        PrinterDisplayName = "Windows の通常使うプリンター"
+    Else
+        PrinterDisplayName = StripPort(fullName)
+    End If
+End Function
+
+Public Sub プリンター設定()
+    frmPrinter.Show
+End Sub
+
+'==================================================
+' CHON MAY IN KHI IN
+'==================================================
+
+' Hien man hinh chon may in. False = nguoi dung huy
+Public Function ChoosePrinter(ByVal kind As String, ByVal title As String) As Boolean
+
+    PickKind = kind
+    PickTitle = title
+    PickResult = ""
+    PickLabel = False
+    PickPreview = False
+
+    frmPrintSelect.Show
+
+    ChoosePrinter = (PickResult <> "")
+
+End Function
+
+' Chuyen may in. Tra ve "" neu OK, nguoc lai la loi
+Public Function SwitchPrinter(ByVal fullName As String) As String
+
+    If fullName = "" Then Exit Function
+
+    On Error Resume Next
+    Application.ActivePrinter = fullName
+    If Err.Number <> 0 Then SwitchPrinter = "プリンター「" & PrinterDisplayName(fullName) & "」に切り替えできません。"
+    On Error GoTo 0
+
+End Function
+
+' Xoa va tao lai sheet in -> sheet lay kho giay mac dinh cua may in dang chon
+Public Function FreshPrintSheet(ByVal sheetName As String) As Worksheet
+
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets(sheetName).Visible = xlSheetVisible
+    ThisWorkbook.Worksheets(sheetName).Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set FreshPrintSheet = GetOrCreateSheet(sheetName)
+    FreshPrintSheet.Visible = xlSheetVisible
+
+End Function
