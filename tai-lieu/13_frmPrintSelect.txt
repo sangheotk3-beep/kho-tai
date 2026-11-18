@@ -1,0 +1,189 @@
+Option Explicit
+
+'==================================================
+' frmPrintSelect  -  プリンターの選択
+' Hien khi bam in (熊本行き, 棚卸表). Chon may in co trong may tinh.
+' Ket qua: PickResult / PickLabel / PickPreview (modApp)
+' Noi dung in tu vua kho giay cua may in duoc chon.
+'==================================================
+
+Private Const FW As Single = 560
+Private Const FH As Single = 430
+
+Private WithEvents lstP As MSForms.ListBox
+Private WithEvents chkLabel As MSForms.CheckBox
+Private WithEvents cmdOK As MSForms.CommandButton
+Private WithEvents cmdReload As MSForms.CommandButton
+Private WithEvents cmdCancel As MSForms.CommandButton
+
+Private chkPreview As MSForms.CheckBox
+Private lblInfo As MSForms.Label
+
+Private Sub UserForm_Initialize()
+
+    UI_InitForm Me, PickTitle, "印刷するプリンターを選んでください", FW, FH
+
+    UI_Caption Me, "capP", "プリンター（このパソコンに接続されているもの）", 16, 70, 500
+
+    Set lstP = Me.Controls.Add("Forms.ListBox.1", "lstP")
+    With lstP
+        .Left = 16: .Top = 88: .Width = 528: .Height = 176
+        .Font.Name = UI_FONT: .Font.Size = 12
+        .ForeColor = CLR_TEXT: .BackColor = CLR_WHITE
+        .SpecialEffect = fmSpecialEffectFlat
+        .BorderStyle = fmBorderStyleSingle: .BorderColor = CLR_BORDER
+        .ColumnCount = 2
+        .ColumnWidths = "0 pt;520 pt"
+        .IntegralHeight = False
+    End With
+
+    Set chkLabel = Me.Controls.Add("Forms.CheckBox.1", "chkLabel")
+    With chkLabel
+        .Left = 16: .Top = 272: .Width = 528: .Height = 20
+        .Caption = "ラベルとして印刷（1 箱・1 品目ごとに 1 枚、ラベルの大きさに合わせる）"
+        .Font.Name = UI_FONT: .Font.Size = 10
+        .BackStyle = fmBackStyleTransparent
+        .Visible = (PickKind = "LABEL")
+    End With
+
+    Set chkPreview = Me.Controls.Add("Forms.CheckBox.1", "chkPreview")
+    With chkPreview
+        .Left = 16: .Top = 272: .Width = 528: .Height = 20
+        .Caption = "印刷プレビューを表示する"
+        .Font.Name = UI_FONT: .Font.Size = 10
+        .BackStyle = fmBackStyleTransparent
+        .Visible = (PickKind <> "LABEL")
+        .Value = True
+    End With
+
+    Set lblInfo = UI_Label(Me, "lblInfo", "", 16, 298, 528, 40, 9, False, CLR_MUTED)
+    lblInfo.WordWrap = True
+
+    Set cmdReload = UI_Button(Me, "cmdReload", "再検索", 16, 354, 110, 36, BTN_SECONDARY)
+    Set cmdOK = UI_Button(Me, "cmdOK", "印刷", 318, 354, 110, 36, BTN_ACCENT)
+    Set cmdCancel = UI_Button(Me, "cmdCancel", "キャンセル", 434, 354, 110, 36, BTN_SECONDARY)
+
+    LoadPrinters
+    UI_Status Me, "ダブルクリックでもすぐ印刷できます。"
+
+End Sub
+
+Private Sub LoadPrinters()
+
+    Dim nm As Variant
+    Dim k As Long
+    Dim def As String
+    Dim want As String
+    Dim pick As Long
+
+    lstP.Clear
+    def = StripPort(Application.ActivePrinter)
+
+    ' May in muon chon san: lan truoc da dung > tu dong
+    If PickKind = "LABEL" Then
+        want = GetPrinterSetting("SK_LastLabel")
+        If want = "" Then want = StripPort(ResolveLabelPrinter())
+    Else
+        want = GetPrinterSetting("SK_LastA4")
+        If want = "" Then want = StripPort(ResolveA4Printer())
+    End If
+    If want = "" Then want = def
+
+    pick = -1
+
+    For Each nm In PrinterNames()
+        lstP.AddItem CStr(nm)
+        k = lstP.ListCount - 1
+        lstP.List(k, 1) = CStr(nm) & IIf(CStr(nm) = def, "　（通常使うプリンター）", "") & _
+                          IIf(IsLabelPrinterName(CStr(nm)), "　［ラベル］", "")
+        If StrComp(CStr(nm), want, vbTextCompare) = 0 Then pick = k
+    Next nm
+
+    If lstP.ListCount = 0 Then
+        lblInfo.Caption = "プリンターが見つかりません。Windows の「プリンターとスキャナー」で接続を確認してください。"
+        cmdOK.Enabled = False
+        Exit Sub
+    End If
+
+    cmdOK.Enabled = True
+    If pick < 0 Then pick = 0
+    lstP.ListIndex = pick
+
+End Sub
+
+Private Sub lstP_Change()
+
+    Dim nm As String
+
+    If lstP.ListIndex < 0 Then Exit Sub
+    nm = CStr(lstP.List(lstP.ListIndex, 0))
+
+    If PickKind = "LABEL" Then
+        chkLabel.Value = IsLabelPrinterName(nm)
+    End If
+
+    UpdateInfo
+
+End Sub
+
+Private Sub chkLabel_Click()
+    UpdateInfo
+End Sub
+
+Private Sub UpdateInfo()
+
+    If PickKind = "LABEL" And chkLabel.Value Then
+        lblInfo.Caption = "1 箱・1 品目ごとに 1 枚、プリンターに設定されたラベルの大きさに合わせて印刷します。" & _
+                          "（ラベルの大きさは Windows のプリンターの「印刷設定 → 用紙サイズ」で設定）"
+    Else
+        lblInfo.Caption = "プリンターに設定された用紙（A4 など）の幅に合わせて印刷します。長い場合は次のページへ続きます。"
+    End If
+
+End Sub
+
+Private Sub lstP_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    cmdOK_Click
+End Sub
+
+Private Sub cmdOK_Click()
+
+    Dim nm As String
+    Dim full As String
+
+    If lstP.ListIndex < 0 Then Exit Sub
+    nm = CStr(lstP.List(lstP.ListIndex, 0))
+    full = FullPrinterName(nm)
+
+    If full = "" Then
+        UI_Status Me, "このプリンターは使用できません。別のプリンターを選んでください。", MSG_ERROR
+        UI_Sound SOUND_ERROR
+        Exit Sub
+    End If
+
+    PickResult = full
+    PickLabel = (PickKind = "LABEL" And chkLabel.Value)
+    PickPreview = (PickKind <> "LABEL" And chkPreview.Value)
+
+    ' Nho may in cho lan sau
+    If PickKind = "LABEL" Then
+        SetPrinterSetting "SK_LastLabel", nm
+    Else
+        SetPrinterSetting "SK_LastA4", nm
+    End If
+
+    Unload Me
+
+End Sub
+
+Private Sub cmdReload_Click()
+    LoadPrinters
+End Sub
+
+Private Sub cmdCancel_Click()
+    PickResult = ""
+    Unload Me
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = 0 Then PickResult = ""
+End Sub
