@@ -1,0 +1,696 @@
+Option Explicit
+
+'==================================================
+' frmOutputSlip  -  出庫伝票作成
+'
+' - Tao phieu xuat (OutputDetails, trang thai 未出庫). Ton kho CHUA bi tru.
+' - 属性 / サイズ: chi hien hang dang con ton kho
+' - 数量 (本) khong vuot qua ton kho (tinh ca cac dong da them)
+' - 行番: cung 伝票番号 thi dem tiep, phieu khac bat dau lai tu 1
+' - Khong cho dang ky trung 伝票番号
+' - Double-click 1 dong de xoa
+'==================================================
+
+'==================================================
+' CAI DAT DOC CSV (nut CSV取込)  <<< SUA O DAY THEO FILE CSV CUA BAN >>>
+'
+' So thu tu cot trong CSV (cot dau tien = 1). 0 = khong dung cot do.
+'==================================================
+Private Const CSV_COL_SLIP As Long = 1       ' 伝票番号
+Private Const CSV_COL_ATTR As Long = 2       ' 属性
+Private Const CSV_COL_SIZE As Long = 3       ' サイズ
+Private Const CSV_COL_QTY As Long = 4        ' 数量
+Private Const CSV_COL_DATE As Long = 0       ' 出庫日 (0 = dung ngay tren man hinh)
+Private Const CSV_COL_NOTE As Long = 0       ' 備考   (0 = khong lay)
+
+Private Const CSV_HEADER_ROWS As Long = 1    ' so dong tieu de can bo qua (0 = khong co)
+Private Const CSV_DELIM As String = ","      ' dau phan cach: "," hoac vbTab
+Private Const CSV_CHARSET As String = "shift_jis"   ' "shift_jis" hoac "utf-8"
+
+' True = 数量 trong CSV la SO LO (QR) -> nhan voi 1QR本数 trong マスタ
+' False = 数量 trong CSV la SO ONG (本)
+Private Const CSV_QTY_IS_LOTS As Boolean = False
+'==================================================
+
+Private Const FW As Single = 800
+Private Const FH As Single = 600
+
+' Cot listbox: 0 伝票番号 | 1 行番 | 2 属性 | 3 サイズ | 4 数量
+
+Private WithEvents txtQR As MSForms.TextBox
+Private WithEvents cboAttr As MSForms.ComboBox
+Private WithEvents cboSize As MSForms.ComboBox
+Private WithEvents txtQty As MSForms.TextBox
+Private WithEvents cmdAdd As MSForms.CommandButton
+Private WithEvents lstItems As MSForms.ListBox
+Private WithEvents cmdClear As MSForms.CommandButton
+Private WithEvents cmdSave As MSForms.CommandButton
+Private WithEvents cmdClose As MSForms.CommandButton
+Private WithEvents cmdCsv As MSForms.CommandButton
+
+Private txtShipDate As MSForms.TextBox
+Private txtNote As MSForms.TextBox
+Private lblStock As MSForms.Label
+Private lblMsg As MSForms.Label
+Private lblCount As MSForms.Label
+
+'==================================================
+' GIAO DIEN
+'==================================================
+
+Private Sub UserForm_Initialize()
+
+    UI_InitForm Me, "出庫伝票作成", "伝票を作成します（この時点では在庫は減りません）", FW, FH
+
+    ' ----- Phieu -----
+    UI_Panel Me, "pnlSlip", 16, 72, 768, 64
+    UI_Caption Me, "capDate", "出庫日", 30, 80, 130
+    UI_Caption Me, "capQR", "伝票QRコード", 170, 80, 300
+    UI_Caption Me, "capNote", "備考", 480, 80, 180
+
+    Set txtShipDate = UI_Text(Me, "txtShipDate", 30, 96, 130, 26)
+    Set txtQR = UI_Text(Me, "txtQR", 170, 96, 300, 26)
+    txtQR.BorderColor = CLR_ACCENT
+    Set txtNote = UI_Text(Me, "txtNote", 480, 96, 180, 26)
+    Set cmdCsv = UI_Button(Me, "cmdCsv", "CSV取込", 670, 96, 100, 26, BTN_SECONDARY)
+
+    ' ----- Mat hang -----
+    UI_Panel Me, "pnlItem", 16, 146, 768, 86
+    UI_Caption Me, "capAttr", "属性（在庫あり）", 30, 154, 160
+    UI_Caption Me, "capSize", "サイズ（在庫あり）", 200, 154, 220
+    UI_Caption Me, "capQty", "数量（本）", 430, 154, 80
+
+    Set cboAttr = UI_Combo(Me, "cboAttr", 30, 170, 160, 26)
+    Set cboSize = UI_Combo(Me, "cboSize", 200, 170, 220, 26)
+    Set txtQty = UI_Text(Me, "txtQty", 430, 170, 80, 26)
+    txtQty.TextAlign = fmTextAlignRight
+    Set cmdAdd = UI_Button(Me, "cmdAdd", "明細追加", 520, 170, 110, 26, BTN_ACCENT)
+
+    Set lblStock = UI_Label(Me, "lblStock", "", 30, 204, 740, 18, 10, True, CLR_PRIMARY)
+
+    ' ----- Thong bao -----
+    Set lblMsg = UI_Label(Me, "lblMsg", "", 16, 242, 768, 24, 11, True)
+
+    ' ----- Danh sach -----
+    Set lstItems = UI_List(Me, "lstItems", 16, 274, 768, 248, _
+        Array(160, 60, 160, 260, 100), _
+        Array("伝票番号", "行番", "属性", "サイズ", "数量"))
+
+    ' ----- Chan -----
+    Set lblCount = UI_Label(Me, "lblCount", "", 16, 540, 420, 22, 12, True, CLR_PRIMARY)
+    Set cmdClear = UI_Button(Me, "cmdClear", "クリア", 440, 534, 100, 34, BTN_SECONDARY)
+    Set cmdSave = UI_Button(Me, "cmdSave", "登録完了", 548, 534, 124, 34, BTN_ACCENT)
+    Set cmdClose = UI_Button(Me, "cmdClose", "閉じる", 680, 534, 104, 34, BTN_SECONDARY)
+
+    txtShipDate.Value = Format$(Date, "yyyy/mm/dd")
+    txtQty.Value = "1"
+
+    LoadAttributes
+    UpdateCounts
+    UpdateStockLabel
+
+    UI_Msg lblMsg, "伝票QRコードを読み、品目と数量を追加してください。", MSG_INFO
+    UI_Status Me, "行をダブルクリックすると削除できます。　登録完了まで在庫は変わりません。"
+
+End Sub
+
+Private Sub UserForm_Activate()
+    On Error Resume Next
+    txtQR.SetFocus
+End Sub
+
+'==================================================
+' TON KHO
+'==================================================
+
+' So luong hang nay da them trong danh sach
+Private Function AddedQty(ByVal attr As String, ByVal siz As String) As Double
+
+    Dim i As Long
+
+    For i = 0 To lstItems.ListCount - 1
+        If StrComp(CStr(lstItems.List(i, 2)), attr, vbTextCompare) = 0 _
+        And StrComp(CStr(lstItems.List(i, 3)), siz, vbTextCompare) = 0 Then
+            AddedQty = AddedQty + Val(lstItems.List(i, 4))
+        End If
+    Next i
+
+End Function
+
+Private Sub LoadAttributes()
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim s As String
+
+    Set sh = Sht(SH_STOCK)
+
+    cboAttr.Clear
+    cboSize.Clear
+
+    For r = 2 To LastRowOf(sh, "A")
+        s = Trim$(CStr(sh.Cells(r, "A").Value))
+        If s <> "" And NumOf(sh.Cells(r, "H").Value) > 0 Then
+            If Not ComboHas(cboAttr, s) Then cboAttr.AddItem s
+        End If
+    Next r
+
+End Sub
+
+Private Sub cboAttr_Change()
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim attr As String
+    Dim s As String
+
+    cboSize.Clear
+    attr = Trim$(CStr(cboAttr.Value))
+
+    If attr <> "" Then
+
+        Set sh = Sht(SH_STOCK)
+
+        For r = 2 To LastRowOf(sh, "A")
+            If StrComp(Trim$(CStr(sh.Cells(r, "A").Value)), attr, vbTextCompare) = 0 Then
+                s = Trim$(CStr(sh.Cells(r, "B").Value))
+                If s <> "" And NumOf(sh.Cells(r, "H").Value) > 0 Then
+                    If Not ComboHas(cboSize, s) Then cboSize.AddItem s
+                End If
+            End If
+        Next r
+
+    End If
+
+    UpdateStockLabel
+
+End Sub
+
+Private Sub cboSize_Change()
+    UpdateStockLabel
+    On Error Resume Next
+    If cboSize.ListIndex >= 0 Then txtQty.SetFocus
+End Sub
+
+Private Sub UpdateStockLabel()
+
+    Dim attr As String, siz As String
+    Dim stock As Double
+
+    attr = Trim$(CStr(cboAttr.Value))
+    siz = Trim$(CStr(cboSize.Value))
+
+    If attr = "" Or siz = "" Then
+        lblStock.Caption = vbNullString
+        Exit Sub
+    End If
+
+    stock = StockOf(attr, siz)
+    lblStock.Caption = "在庫: " & Num(stock) & " 本　／　選択可能: " & _
+                       Num(stock - AddedQty(attr, siz)) & " 本"
+
+End Sub
+
+'==================================================
+' PHIEU / 行番
+'==================================================
+
+Private Function CurrentSlip() As String
+    CurrentSlip = QR伝票コード(CStr(txtQR.Value))
+End Function
+
+Private Function SlipRegistered(ByVal slip As String) As Boolean
+    SlipRegistered = (Application.WorksheetFunction.CountIf(Sht(SH_DETAIL).Range("B:B"), slip) > 0)
+End Function
+
+Private Sub txtQR_Change()
+    UpdateCounts
+End Sub
+
+' Enter sau khi quet phieu -> kiem tra trung, chuyen sang chon 属性
+Private Sub txtQR_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+
+    Dim slip As String
+
+    If KeyCode <> 13 Then Exit Sub
+    KeyCode = 0
+
+    slip = CurrentSlip()
+    txtQR.Value = slip
+
+    If slip = "" Then Exit Sub
+
+    If SlipRegistered(slip) Then
+        UI_Msg lblMsg, "この伝票QRコードは既に登録されています: " & slip, MSG_ERROR
+        txtQR.SelStart = 0
+        txtQR.SelLength = Len(txtQR.Text)
+        Exit Sub
+    End If
+
+    UI_Msg lblMsg, "伝票 " & slip & " : 品目と数量を追加してください。", MSG_INFO
+    On Error Resume Next
+    cboAttr.SetFocus
+
+End Sub
+
+Private Sub txtQty_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If KeyCode = 13 Then
+        KeyCode = 0
+        AddLine
+    End If
+End Sub
+
+Private Function LineCountOf(ByVal slip As String) As Long
+
+    Dim k As Long
+
+    For k = 0 To lstItems.ListCount - 1
+        If StrComp(CStr(lstItems.List(k, 0)), slip, vbTextCompare) = 0 Then
+            LineCountOf = LineCountOf + 1
+        End If
+    Next k
+
+End Function
+
+Private Sub RenumberLines()
+
+    Dim k As Long
+    Dim key As String
+    Dim d As Object
+
+    Set d = CreateObject("Scripting.Dictionary")
+
+    For k = 0 To lstItems.ListCount - 1
+        key = LCase$(CStr(lstItems.List(k, 0)))
+        d(key) = d(key) + 1
+        lstItems.List(k, 1) = CStr(d(key))
+    Next k
+
+End Sub
+
+Private Function SlipCount() As Long
+
+    Dim k As Long
+    Dim d As Object
+
+    Set d = CreateObject("Scripting.Dictionary")
+
+    For k = 0 To lstItems.ListCount - 1
+        d(LCase$(CStr(lstItems.List(k, 0)))) = 1
+    Next k
+
+    SlipCount = d.Count
+
+End Function
+
+Private Sub UpdateCounts()
+
+    Dim txt As String
+    Dim cur As String
+
+    txt = "明細 " & lstItems.ListCount & " 行"
+
+    cur = CurrentSlip()
+    If cur <> "" Then txt = txt & "　（この伝票: " & LineCountOf(cur) & " 行）"
+
+    lblCount.Caption = txt
+
+End Sub
+
+'==================================================
+' THEM DONG
+'==================================================
+
+Private Sub cmdAdd_Click()
+    AddLine
+End Sub
+
+Private Sub AddLine()
+
+    Dim attr As String, siz As String
+    Dim qty As Double, stock As Double, avail As Double
+    Dim slip As String
+    Dim k As Long
+
+    attr = Trim$(CStr(cboAttr.Value))
+    siz = Trim$(CStr(cboSize.Value))
+    slip = CurrentSlip()
+
+    If slip = "" Then
+        UI_Msg lblMsg, "伝票QRコードを入力してください。", MSG_ERROR
+        txtQR.SetFocus
+        Exit Sub
+    End If
+
+    If SlipRegistered(slip) Then
+        UI_Msg lblMsg, "この伝票QRコードは既に登録されています: " & slip, MSG_ERROR
+        txtQR.SetFocus
+        Exit Sub
+    End If
+
+    If attr = "" Or siz = "" Then
+        UI_Msg lblMsg, "属性とサイズを選択してください。", MSG_ERROR
+        Exit Sub
+    End If
+
+    If Not IsNumeric(txtQty.Value) Then
+        UI_Msg lblMsg, "数量には数値を入力してください。", MSG_ERROR
+        txtQty.SetFocus
+        Exit Sub
+    End If
+
+    qty = CDbl(txtQty.Value)
+
+    If qty <= 0 Then
+        UI_Msg lblMsg, "数量は 0 より大きい値を入力してください。", MSG_ERROR
+        txtQty.SetFocus
+        Exit Sub
+    End If
+
+    If Not 品目存在(attr, siz) Then
+        UI_Msg lblMsg, "マスタに登録されていない品目です。", MSG_ERROR
+        Exit Sub
+    End If
+
+    stock = StockOf(attr, siz)
+
+    If stock <= 0 Then
+        UI_Msg lblMsg, "この品目は在庫がありません。", MSG_ERROR
+        Exit Sub
+    End If
+
+    avail = stock - AddedQty(attr, siz)
+
+    If qty > avail + EPS Then
+        UI_Msg lblMsg, "在庫数を超えています（在庫 " & Num(stock) & " 本 / 選択可能 " & _
+                       Num(avail) & " 本）", MSG_ERROR
+        txtQty.SetFocus
+        Exit Sub
+    End If
+
+    lstItems.AddItem slip
+    k = lstItems.ListCount - 1
+    lstItems.List(k, 1) = CStr(LineCountOf(slip))
+    lstItems.List(k, 2) = attr
+    lstItems.List(k, 3) = siz
+    lstItems.List(k, 4) = Num(qty)
+    lstItems.ListIndex = k
+
+    UpdateCounts
+    UI_Msg lblMsg, "追加しました: " & attr & " / " & siz & "　" & Num(qty) & " 本", MSG_OK
+
+    cboSize.ListIndex = -1
+    txtQty.Value = "1"
+    UpdateStockLabel
+
+    On Error Resume Next
+    cboAttr.SetFocus
+
+End Sub
+
+Private Sub lstItems_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+
+    Dim i As Long
+
+    i = lstItems.ListIndex
+    If i < 0 Then Exit Sub
+
+    If MsgBox("この明細を削除しますか？" & vbCrLf & _
+              lstItems.List(i, 2) & "  " & lstItems.List(i, 3), _
+              vbYesNo + vbQuestion, APP_NAME) <> vbYes Then Exit Sub
+
+    lstItems.RemoveItem i
+    RenumberLines
+    UpdateCounts
+    UpdateStockLabel
+    UI_Msg lblMsg, "1 行削除しました。", MSG_INFO
+
+End Sub
+
+'==================================================
+' LUU PHIEU (OutputDetails) - khong tru ton kho
+'==================================================
+
+Private Sub cmdSave_Click()
+
+    Dim sh As Worksheet
+    Dim r As Long
+    Dim i As Long
+    Dim slip As String
+    Dim note As String
+    Dim shipDate As Date
+
+    If Not IsDate(txtShipDate.Value) Then
+        UI_Msg lblMsg, "出庫日を正しく入力してください（例 2026/10/31）。", MSG_ERROR
+        txtShipDate.SetFocus
+        Exit Sub
+    End If
+
+    shipDate = CDate(txtShipDate.Value)
+
+    If lstItems.ListCount = 0 Then
+        UI_Msg lblMsg, "明細を 1 件以上追加してください。", MSG_ERROR
+        Exit Sub
+    End If
+
+    If Int(shipDate) < Int(Date) Then
+        If MsgBox("出庫日が過去の日付です。このまま登録しますか？", _
+                  vbYesNo + vbQuestion, APP_NAME) <> vbYes Then Exit Sub
+    End If
+
+    For i = 0 To lstItems.ListCount - 1
+        If AddedQty(CStr(lstItems.List(i, 2)), CStr(lstItems.List(i, 3))) > _
+           StockOf(CStr(lstItems.List(i, 2)), CStr(lstItems.List(i, 3))) + EPS Then
+            UI_Msg lblMsg, "在庫が不足している明細があります: " & _
+                           lstItems.List(i, 2) & " / " & lstItems.List(i, 3), MSG_ERROR
+            Exit Sub
+        End If
+    Next i
+
+    Set sh = Sht(SH_DETAIL)
+
+    For i = 0 To lstItems.ListCount - 1
+
+        slip = CStr(lstItems.List(i, 0))
+
+        If slip = "" Then
+            UI_Msg lblMsg, "伝票番号が空欄の明細があります。", MSG_ERROR
+            Exit Sub
+        End If
+
+        If SlipRegistered(slip) Then
+            UI_Msg lblMsg, "この伝票QRコードは既に登録されています: " & slip, MSG_ERROR
+            Exit Sub
+        End If
+
+    Next i
+
+    If MsgBox("出庫伝票を登録します。" & vbCrLf & vbCrLf & _
+              "出庫日: " & Format$(shipDate, "yyyy/mm/dd") & vbCrLf & _
+              "伝票数: " & SlipCount() & vbCrLf & _
+              "明細数: " & lstItems.ListCount & " 行" & vbCrLf & vbCrLf & _
+              "この時点では在庫は減りません。よろしいですか？", _
+              vbYesNo + vbQuestion, APP_NAME) <> vbYes Then Exit Sub
+
+    note = Trim$(CStr(txtNote.Value))
+
+    On Error GoTo SaveError
+    Application.ScreenUpdating = False
+
+    For i = 0 To lstItems.ListCount - 1
+
+        r = NextRowOf(sh, "A")
+
+        sh.Cells(r, "A").Value = r - 1
+        sh.Cells(r, "B").NumberFormat = "@"
+        sh.Cells(r, "B").Value = CStr(lstItems.List(i, 0))
+        sh.Cells(r, "C").Value = lstItems.List(i, 2)
+        sh.Cells(r, "D").Value = lstItems.List(i, 3)
+        sh.Cells(r, "E").Value = Val(lstItems.List(i, 4))
+        sh.Cells(r, "F").Value = ST_PENDING
+        sh.Cells(r, "G").Value = note
+        sh.Cells(r, "H").NumberFormat = "yyyy/mm/dd"
+        sh.Cells(r, "H").Value = shipDate
+        sh.Cells(r, "J").Value = CLng(lstItems.List(i, 1))
+
+    Next i
+
+    Application.ScreenUpdating = True
+
+    UI_Msg lblMsg, "出庫伝票を登録しました（明細 " & lstItems.ListCount & " 行・未出庫）。", MSG_OK
+    UI_Sound SOUND_DONE
+    UI_Status Me, "登録: " & Format$(Now, "hh:mm") & "　在庫数は変更されていません。", MSG_OK
+
+    ResetForm
+    Exit Sub
+
+SaveError:
+    Application.ScreenUpdating = True
+    MsgBox "登録中にエラーが発生しました。" & vbCrLf & Err.Description & vbCrLf & _
+           "OutputDetails シートを確認してください。", vbCritical, APP_NAME
+
+End Sub
+
+'==================================================
+' CLEAR / CLOSE
+'==================================================
+
+'==================================================
+' DOC CSV -> them vao danh sach (chua luu, bam 登録完了 de luu)
+'==================================================
+
+Private Sub cmdCsv_Click()
+
+    Dim f As Variant
+    Dim csvRows As Collection
+    Dim rw As Variant
+    Dim i As Long
+    Dim lineNo As Long
+    Dim slip As String, attr As String, siz As String
+    Dim qtyTxt As String
+    Dim qty As Double
+    Dim units As Double
+    Dim avail As Double
+    Dim k As Long
+    Dim okN As Long, ngN As Long
+    Dim errs As String
+    Dim reason As String
+    Dim firstDate As String, firstNote As String
+
+    f = Application.GetOpenFilename("CSV ファイル (*.csv;*.txt),*.csv;*.txt", , "出庫伝票の CSV を選択")
+    If VarType(f) = vbBoolean Then Exit Sub
+
+    On Error GoTo ReadErr
+    Set csvRows = ParseCsv(ReadTextFile(CStr(f), CSV_CHARSET), CSV_DELIM)
+    On Error GoTo 0
+
+    For Each rw In csvRows
+
+        lineNo = lineNo + 1
+        If lineNo <= CSV_HEADER_ROWS Then GoTo NextRow
+
+        slip = QR伝票コード(CsvField(rw, CSV_COL_SLIP))
+        attr = CsvField(rw, CSV_COL_ATTR)
+        siz = CsvField(rw, CSV_COL_SIZE)
+        qtyTxt = Replace(CsvField(rw, CSV_COL_QTY), ",", "")
+
+        ' Bo dong trong hoan toan
+        If slip = "" And attr = "" And siz = "" And qtyTxt = "" Then GoTo NextRow
+
+        reason = vbNullString
+
+        If slip = "" Then
+            reason = "伝票番号が空欄"
+        ElseIf SlipRegistered(slip) Then
+            reason = "伝票番号 " & slip & " は登録済み"
+        ElseIf attr = "" Or siz = "" Then
+            reason = "属性・サイズが空欄"
+        ElseIf Not 品目存在(attr, siz) Then
+            reason = "マスタにない品目 (" & attr & " / " & siz & ")"
+        ElseIf Not IsNumeric(qtyTxt) Then
+            reason = "数量が数字ではありません (" & qtyTxt & ")"
+        End If
+
+        If reason = "" Then
+
+            qty = CDbl(qtyTxt)
+
+            If CSV_QTY_IS_LOTS Then
+                If GetUnitsPerQR(attr, siz, units) Then
+                    qty = qty * units
+                Else
+                    reason = "マスタに 1QR本数 がありません (" & attr & " / " & siz & ")"
+                End If
+            End If
+
+        End If
+
+        If reason = "" Then
+            If qty <= 0 Then
+                reason = "数量が 0 以下"
+            Else
+                avail = StockOf(attr, siz) - AddedQty(attr, siz)
+                If qty > avail + EPS Then
+                    reason = "在庫不足 (" & attr & " / " & siz & "　必要 " & Num(qty) & " / 選択可能 " & Num(avail) & ")"
+                End If
+            End If
+        End If
+
+        If reason <> "" Then
+            ngN = ngN + 1
+            If ngN <= 25 Then errs = errs & vbCrLf & "・" & lineNo & " 行目: " & reason
+            GoTo NextRow
+        End If
+
+        lstItems.AddItem slip
+        k = lstItems.ListCount - 1
+        lstItems.List(k, 1) = CStr(LineCountOf(slip))
+        lstItems.List(k, 2) = attr
+        lstItems.List(k, 3) = siz
+        lstItems.List(k, 4) = Num(qty)
+        okN = okN + 1
+
+        If firstDate = "" And CSV_COL_DATE > 0 Then firstDate = CsvField(rw, CSV_COL_DATE)
+        If firstNote = "" And CSV_COL_NOTE > 0 Then firstNote = CsvField(rw, CSV_COL_NOTE)
+
+NextRow:
+    Next rw
+
+    If IsDate(firstDate) Then txtShipDate.Value = Format$(CDate(firstDate), "yyyy/mm/dd")
+    If firstNote <> "" And Trim$(CStr(txtNote.Value)) = "" Then txtNote.Value = firstNote
+
+    UpdateCounts
+    UpdateStockLabel
+
+    If ngN = 0 Then
+        UI_Msg lblMsg, "CSV から " & okN & " 行を読み込みました。内容を確認して「登録完了」を押してください。", MSG_OK
+    Else
+        UI_Msg lblMsg, "CSV: " & okN & " 行 OK / " & ngN & " 行 エラー（エラー行は追加していません）", MSG_ERROR
+        MsgBox "次の行は追加できませんでした:" & errs & _
+               IIf(ngN > 25, vbCrLf & "…ほか " & (ngN - 25) & " 行", ""), vbExclamation, APP_NAME
+    End If
+
+    Exit Sub
+
+ReadErr:
+    UI_Msg lblMsg, "CSV を読み込めませんでした: " & Err.Description, MSG_ERROR
+
+End Sub
+
+Private Sub cmdClear_Click()
+
+    If MsgBox("入力内容をクリアしますか？", vbYesNo + vbQuestion, APP_NAME) = vbYes Then
+        ResetForm
+        UI_Msg lblMsg, "クリアしました。", MSG_INFO
+    End If
+
+End Sub
+
+Private Sub cmdClose_Click()
+
+    If lstItems.ListCount > 0 Then
+        If MsgBox("未登録の明細があります。閉じてもよろしいですか？", _
+                  vbYesNo + vbQuestion, APP_NAME) <> vbYes Then Exit Sub
+    End If
+
+    Unload Me
+
+End Sub
+
+Private Sub ResetForm()
+
+    txtQR.Value = vbNullString
+    txtNote.Value = vbNullString
+    txtShipDate.Value = Format$(Date, "yyyy/mm/dd")
+    txtQty.Value = "1"
+
+    lstItems.Clear
+
+    LoadAttributes
+    UpdateCounts
+    UpdateStockLabel
+
+    On Error Resume Next
+    txtQR.SetFocus
+
+End Sub
